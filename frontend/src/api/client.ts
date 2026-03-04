@@ -1,0 +1,61 @@
+/**
+ * Axios HTTP client — configured with base URL, API key injection,
+ * and error normalization middleware.
+ */
+
+import axios, { type AxiosInstance } from 'axios'
+
+const API_KEY_STORAGE_KEY = 'alm_api_key'
+
+const client: AxiosInstance = axios.create({
+  baseURL: import.meta.env.VITE_API_BASE_URL ?? '/api/v1',
+  timeout: 60_000,
+  headers: {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  },
+})
+
+// Inject API key from localStorage on every request
+client.interceptors.request.use((config) => {
+  const apiKey = localStorage.getItem(API_KEY_STORAGE_KEY)
+  if (apiKey) {
+    config.headers['X-API-Key'] = apiKey
+  }
+  return config
+})
+
+// Normalize error responses into plain Error objects
+client.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const message =
+      error.response?.data?.message ??
+      error.response?.data?.detail ??
+      error.message ??
+      'An unexpected error occurred'
+
+    const status = error.response?.status
+    const requestId = error.response?.headers?.['x-request-id'] ?? null
+
+    if (import.meta.env.DEV) {
+      console.error(
+        `[ALM API] ${status ?? 'ERR'} ${error.config?.method?.toUpperCase()} ${error.config?.url}:`,
+        message,
+        requestId ? `(req: ${requestId})` : '',
+      )
+    }
+
+    return Promise.reject(new Error(message))
+  },
+)
+
+export function setApiKey(key: string): void {
+  localStorage.setItem(API_KEY_STORAGE_KEY, key)
+}
+
+export function clearApiKey(): void {
+  localStorage.removeItem(API_KEY_STORAGE_KEY)
+}
+
+export default client
