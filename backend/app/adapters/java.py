@@ -1,14 +1,12 @@
 """
 JavaAdapter — delegates to the Java Parser Service (Spring Boot + JavaParser).
 
-Makes HTTP POST requests to the java-parser-service with the Java source files.
+Makes HTTP POST requests to the java-parser-service with the repo path.
 The service returns pre-built UCG nodes and edges as JSON.
 
-External: http://java-parser:8080/parse
+External: http://java-parser:8090/parse
 """
 
-import io
-import zipfile
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -38,40 +36,18 @@ class JavaAdapter(BaseAdapter):
 
     async def parse_files(self, files: list[Path], repo_root: Path) -> UCGOutput:
         """
-        Send Java source files to the java-parser-service and parse the response.
-        Files are zipped in-memory and sent via multipart POST.
+        Send the repo path to the java-parser-service and parse the response.
+        The service reads files directly from the shared filesystem path.
         """
         output = UCGOutput()
 
         if not files:
             return output
 
-        # Build in-memory ZIP of Java source files
-        zip_buffer = io.BytesIO()
-        try:
-            with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-                for f in files:
-                    try:
-                        relative = str(f.relative_to(repo_root))
-                        zf.write(f, arcname=relative)
-                    except Exception:
-                        relative = f.name
-                        zf.write(f, arcname=relative)
-        except Exception as exc:
-            output.parse_errors.append({
-                "file_path": str(repo_root),
-                "error_message": f"Failed to create ZIP archive: {exc}",
-                "line_number": None,
-            })
-            return output
-
-        zip_buffer.seek(0)
-        zip_bytes = zip_buffer.getvalue()
-
         try:
             response = await self._client.post(
                 "/parse",
-                files={"archive": ("sources.zip", zip_bytes, "application/zip")},
+                json={"repoPath": str(repo_root)},
             )
             response.raise_for_status()
             data = response.json()

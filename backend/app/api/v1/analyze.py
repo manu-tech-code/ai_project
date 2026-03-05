@@ -268,7 +268,10 @@ async def submit_job(
             ) from exc
 
     # Extract archive to a persistent temp directory (pipeline reads from here).
-    extract_dir = tempfile.mkdtemp(prefix="alm_job_")
+    # ALM_JOBS_DIR is a shared volume also mounted in the java-parser container.
+    jobs_base = os.environ.get("ALM_JOBS_DIR") or tempfile.gettempdir()
+    os.makedirs(jobs_base, exist_ok=True)
+    extract_dir = tempfile.mkdtemp(prefix="alm_job_", dir=jobs_base)
     try:
         file_count, _ = _extract_archive(content, extract_dir)
     except HTTPException:

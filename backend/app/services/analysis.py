@@ -238,7 +238,7 @@ class AnalysisService:
         """Run the LanguageDetector agent and update job.languages."""
         try:
             from app.agents.base import JobContext  # noqa: PLC0415
-            from app.agents.language_detector import LanguageDetector  # noqa: PLC0415
+            from app.agents.language_detector import LanguageDetectorAgent  # noqa: PLC0415
 
             ctx = JobContext(
                 job_id=job.id,
@@ -246,13 +246,14 @@ class AnalysisService:
                 db_session=session,
                 job_config=job.config or {},
             )
-            detector = LanguageDetector()
-            language_info = await detector.run(ctx, session)
+            detector = LanguageDetectorAgent()
+            result = await detector.run(ctx)
+            language_info = result.get("languages", [])
 
             # Update job metadata.
             job.languages = [li["language"] for li in language_info] if language_info else []
-            total_files = sum(li.get("file_count", 0) for li in (language_info or []))
-            total_lines = sum(li.get("total_lines", 0) for li in (language_info or []))
+            total_files = sum(li.get("file_count", 0) for li in language_info)
+            total_lines = sum(li.get("total_lines", 0) for li in language_info)
             job.file_count = total_files if total_files > 0 else None
             job.total_lines = total_lines if total_lines > 0 else None
             job.updated_at = datetime.now(UTC)
@@ -323,7 +324,7 @@ class AnalysisService:
         """Run the Mapper (UCG Builder) agent to construct the code graph."""
         try:
             from app.agents.base import JobContext  # noqa: PLC0415
-            from app.agents.mapper import Mapper  # noqa: PLC0415
+            from app.agents.mapper import MapperAgent  # noqa: PLC0415
 
             ctx = JobContext(
                 job_id=job.id,
@@ -332,8 +333,8 @@ class AnalysisService:
                 job_config=job.config or {},
             )
             ctx.languages = [li["language"] for li in language_info]
-            mapper = Mapper()
-            ucg_stats = await mapper.run(ctx, session)
+            mapper = MapperAgent()
+            ucg_stats = await mapper.run(ctx)
 
             if ucg_stats:
                 job.ucg_node_count = ucg_stats.get("node_count", 0)
@@ -351,7 +352,7 @@ class AnalysisService:
         """Run the SmellDetector agent to identify architectural smells."""
         try:
             from app.agents.base import JobContext  # noqa: PLC0415
-            from app.agents.smell_detector import SmellDetector  # noqa: PLC0415
+            from app.agents.smell_detector import SmellDetectorAgent  # noqa: PLC0415
 
             ctx = JobContext(
                 job_id=job.id,
@@ -360,10 +361,9 @@ class AnalysisService:
                 job_config=job.config or {},
             )
             ctx.languages = job.languages or []
-            detector = SmellDetector()
-            smell_results = await detector.run(ctx, session)
-            smell_count = len(smell_results) if smell_results else 0
-            job.smell_count = smell_count
+            detector = SmellDetectorAgent()
+            smell_results = await detector.run(ctx)
+            job.smell_count = smell_results.get("smell_count", 0)
             job.updated_at = datetime.now(UTC)
             await session.flush()
 
@@ -377,7 +377,7 @@ class AnalysisService:
         """Run the Planner agent to generate a prioritized refactor plan."""
         try:
             from app.agents.base import JobContext  # noqa: PLC0415
-            from app.agents.planner import Planner  # noqa: PLC0415
+            from app.agents.planner import PlannerAgent  # noqa: PLC0415
 
             ctx = JobContext(
                 job_id=job.id,
@@ -386,8 +386,8 @@ class AnalysisService:
                 job_config=job.config or {},
             )
             ctx.languages = job.languages or []
-            planner = Planner()
-            await planner.run(ctx, session)
+            planner = PlannerAgent()
+            await planner.run(ctx)
 
         except (ImportError, NotImplementedError, AttributeError) as exc:
             logger.warning(
@@ -399,7 +399,7 @@ class AnalysisService:
         """Run the Transformer agent to generate code patches."""
         try:
             from app.agents.base import JobContext  # noqa: PLC0415
-            from app.agents.transformer import Transformer  # noqa: PLC0415
+            from app.agents.transformer import TransformerAgent  # noqa: PLC0415
 
             ctx = JobContext(
                 job_id=job.id,
@@ -408,10 +408,9 @@ class AnalysisService:
                 job_config=job.config or {},
             )
             ctx.languages = job.languages or []
-            transformer = Transformer()
-            patches = await transformer.run(ctx, session)
-            patch_count = len(patches) if patches else 0
-            job.patch_count = patch_count
+            transformer = TransformerAgent()
+            transformer_result = await transformer.run(ctx)
+            job.patch_count = transformer_result.get("patches_created", 0)
             job.updated_at = datetime.now(UTC)
             await session.flush()
 
@@ -425,7 +424,7 @@ class AnalysisService:
         """Run the Validator agent to sandbox-validate each patch."""
         try:
             from app.agents.base import JobContext  # noqa: PLC0415
-            from app.agents.validator import Validator  # noqa: PLC0415
+            from app.agents.validator import ValidatorAgent  # noqa: PLC0415
 
             ctx = JobContext(
                 job_id=job.id,
@@ -434,8 +433,8 @@ class AnalysisService:
                 job_config=job.config or {},
             )
             ctx.languages = job.languages or []
-            validator = Validator()
-            await validator.run(ctx, session)
+            validator = ValidatorAgent()
+            await validator.run(ctx)
 
         except (ImportError, NotImplementedError, AttributeError) as exc:
             logger.warning(
@@ -446,7 +445,7 @@ class AnalysisService:
     async def _run_learner(self, job: Job, session: AsyncSession) -> None:
         """Run the Learner agent to store vector embeddings (non-critical)."""
         from app.agents.base import JobContext  # noqa: PLC0415
-        from app.agents.learner import Learner  # noqa: PLC0415
+        from app.agents.learner import LearnerAgent  # noqa: PLC0415
 
         ctx = JobContext(
             job_id=job.id,
@@ -455,5 +454,5 @@ class AnalysisService:
             job_config=job.config or {},
         )
         ctx.languages = job.languages or []
-        learner = Learner()
-        await learner.run(ctx, session)
+        learner = LearnerAgent()
+        await learner.run(ctx)
