@@ -87,34 +87,67 @@
         </span>
       </button>
 
-      <!-- API Key indicator -->
+      <!-- API Key indicator / generate button -->
       <div
+        v-if="hasApiKey"
         class="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs"
-        :style="{
-          background: hasApiKey ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)',
-          color: hasApiKey ? 'var(--color-success)' : 'var(--color-error)',
-        }"
-        :title="hasApiKey ? 'API key configured' : 'No API key — set alm_api_key in localStorage'"
+        :style="{ background: 'rgba(34,197,94,0.1)', color: 'var(--color-success)' }"
+        title="API key configured"
       >
-        <span class="w-1.5 h-1.5 rounded-full flex-shrink-0" :style="{ background: hasApiKey ? 'var(--color-success)' : 'var(--color-error)' }" />
-        <span class="hidden sm:block">{{ hasApiKey ? 'Connected' : 'No Key' }}</span>
+        <span class="w-1.5 h-1.5 rounded-full flex-shrink-0" style="background: var(--color-success)" />
+        <span class="hidden sm:block">Connected</span>
       </div>
+      <button
+        v-else
+        class="flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-opacity"
+        :style="{ background: 'rgba(99,102,241,0.15)', color: 'var(--color-accent, #6366f1)' }"
+        :disabled="generatingKey"
+        title="Click to generate and save an API key"
+        @click="handleGenerateKey"
+      >
+        <svg v-if="generatingKey" class="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+        </svg>
+        <svg v-else class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"
+          />
+        </svg>
+        <span class="hidden sm:block">{{ generatingKey ? 'Generating…' : 'Generate Key' }}</span>
+      </button>
     </div>
   </header>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { useAnalysisStore } from '@/stores/analysis'
 import { useUIStore } from '@/stores/ui'
+import { generateAndSaveApiKey, getApiKey } from '@/api/client'
 
 const uiStore = useUIStore()
 const analysisStore = useAnalysisStore()
 const route = useRoute()
 
-const hasApiKey = computed(() => !!(localStorage.getItem('alm_api_key') || import.meta.env.VITE_API_KEY))
+const apiKeyPresent = ref(!!(getApiKey()))
+const hasApiKey = computed(() => apiKeyPresent.value)
+const generatingKey = ref(false)
+
+async function handleGenerateKey() {
+  generatingKey.value = true
+  try {
+    await generateAndSaveApiKey()
+    apiKeyPresent.value = true
+    uiStore.notify({ type: 'success', title: 'API Key Generated', message: 'Your API key has been saved.', duration: 4000 })
+  } catch {
+    uiStore.notify({ type: 'error', title: 'Key Generation Failed', message: 'Could not generate an API key.', duration: 5000 })
+  } finally {
+    generatingKey.value = false
+  }
+}
 
 interface Crumb { label: string; to?: string }
 

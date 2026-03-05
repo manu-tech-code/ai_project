@@ -61,4 +61,18 @@ export function clearApiKey(): void {
   localStorage.removeItem(API_KEY_STORAGE_KEY)
 }
 
+export function getApiKey(): string | null {
+  return localStorage.getItem(API_KEY_STORAGE_KEY) || (import.meta.env.VITE_API_KEY as string | undefined) || null
+}
+
+/** Call the open /admin/api-keys/generate endpoint and persist the result. */
+export async function generateAndSaveApiKey(): Promise<string> {
+  // Use a raw axios call without the X-API-Key header so we don't need one to bootstrap.
+  const baseURL = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
+  const response = await axios.post<{ key: string }>(`${baseURL}/admin/api-keys/generate`)
+  const key = response.data.key
+  setApiKey(key)
+  return key
+}
+
 export default client

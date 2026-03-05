@@ -189,6 +189,53 @@ async def get_metrics(
 # ---------------------------------------------------------------------------
 
 
+@router.post("/api-keys/generate", status_code=status.HTTP_201_CREATED, response_model=CreateAPIKeyResponse)
+async def generate_api_key_open(
+    db: AsyncSession = Depends(get_db),
+) -> CreateAPIKeyResponse:
+    """
+    Generate a new API key without requiring authentication.
+
+    This open endpoint allows the frontend (or any client) to bootstrap
+    a usable key on first visit. The key is created with read+write scopes
+    and the default rate limit. Store the returned key immediately — it is
+    shown only once.
+    """
+    settings = get_settings()
+    label = f"Auto-generated {datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    raw_key = generate_api_key(env=settings.ALM_ENV)
+    key_hash = hash_api_key(raw_key)
+    key_prefix = raw_key[:12]
+
+    api_key = APIKey(
+        id=uuid.uuid4(),
+        label=label,
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        scopes=["read", "write"],
+        rate_limit_per_minute=100,
+        expires_at=None,
+        created_at=datetime.now(UTC),
+    )
+    db.add(api_key)
+    await db.flush()
+
+    logger.info(
+        "API key auto-generated (open endpoint)",
+        extra={"key_id": str(api_key.id), "label": label},
+    )
+
+    return CreateAPIKeyResponse(
+        key_id=api_key.id,
+        key=raw_key,
+        label=api_key.label,
+        scopes=list(api_key.scopes),
+        expires_at=api_key.expires_at,
+        rate_limit_per_minute=api_key.rate_limit_per_minute,
+        created_at=api_key.created_at,
+    )
+
+
 @router.post("/api-keys", status_code=status.HTTP_201_CREATED, response_model=CreateAPIKeyResponse)
 async def create_api_key(
     body: CreateAPIKeyRequest,

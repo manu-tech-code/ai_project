@@ -4,6 +4,17 @@
 </template>
 
 <script setup lang="ts">
-// App.vue — root Vue component
-// No logic needed here; routing and layout are handled by AppLayout
+import { onMounted } from 'vue'
+import { generateAndSaveApiKey, getApiKey } from '@/api/client'
+
+// Bootstrap an API key on first visit if none is stored
+onMounted(async () => {
+  if (!getApiKey()) {
+    try {
+      await generateAndSaveApiKey()
+    } catch {
+      // Silently fail — the header's "Generate Key" button serves as manual fallback
+    }
+  }
+})
 </script>
