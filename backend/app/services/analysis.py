@@ -111,6 +111,10 @@ class AnalysisService:
             job.updated_at = datetime.now(UTC)
             await session.commit()
 
+            # Invalidate job list cache so the completed status shows immediately.
+            from app.core.cache import cache_invalidate  # noqa: PLC0415
+            await cache_invalidate("alm:jobs:*")
+
             logger.info(
                 "Job completed successfully",
                 extra={

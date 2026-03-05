@@ -34,6 +34,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_api_key, get_db
+from app.core.cache import cache_get, cache_invalidate, cache_set
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.job import Job
@@ -301,6 +302,9 @@ async def submit_job(
         extra={"job_id": str(job_id), "archive": filename, "size_bytes": archive_size},
     )
 
+    # Invalidate job list cache so the new job appears immediately.
+    await cache_invalidate("alm:jobs:*")
+
     # Start the analysis pipeline as a background task.
     background_tasks.add_task(_run_analysis_pipeline, job_id, extract_dir)
 
@@ -350,6 +354,12 @@ async def list_jobs(
     page_size = max(1, min(page_size, 200))
     offset = (page - 1) * page_size
 
+    # Short TTL cache (15s) — avoids hammering DB during polling.
+    cache_key = f"alm:jobs:p{page}:ps{page_size}:s{job_status or ''}"
+    cached = await cache_get(cache_key)
+    if cached:
+        return JobListResponse(**cached)
+
     # Build query with optional status filter.
     base_query = select(Job).order_by(Job.created_at.desc())
     count_query = select(func.count()).select_from(Job)
@@ -382,7 +392,7 @@ async def list_jobs(
             )
         )
 
-    return JobListResponse(
+    response = JobListResponse(
         data=summaries,
         pagination=PaginationMeta(
             page=page,
@@ -393,6 +403,8 @@ async def list_jobs(
             has_prev=page > 1,
         ),
     )
+    await cache_set(cache_key, response.model_dump(), ttl=15)
+    return response
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)

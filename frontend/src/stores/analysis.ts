@@ -10,6 +10,7 @@ import { computed, ref } from 'vue'
 
 import { analyzeApi } from '@/api/endpoints'
 import type { Job, JobConfig, JobSummary, PaginationMeta } from '@/types'
+import { useGraphStore } from '@/stores/graph'
 
 export const useAnalysisStore = defineStore('analysis', () => {
   // --- State ---
@@ -23,6 +24,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
 
   let pollTimer: ReturnType<typeof setInterval> | null = null
   const POLL_INTERVAL_MS = 3000
+  const JOBS_CACHE_TTL_MS = 15_000 // match backend 15s TTL
+  let _lastJobsFetchTime = 0
 
   // --- Getters ---
   const activeJobStatus = computed(() => activeJob.value?.status ?? null)
@@ -61,8 +64,10 @@ export const useAnalysisStore = defineStore('analysis', () => {
       // Set active job immediately after submission
       activeJob.value = data
       activeJobId.value = data.job_id
-      // Prepend to jobs list
+      // Prepend to jobs list and invalidate caches
       jobs.value.unshift(data as unknown as JobSummary)
+      _lastJobsFetchTime = 0
+      useGraphStore().invalidate()
       return data
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err)
@@ -84,13 +89,19 @@ export const useAnalysisStore = defineStore('analysis', () => {
     return data
   }
 
-  async function fetchJobs(page = 1): Promise<void> {
+  async function fetchJobs(page = 1, force = false): Promise<void> {
+    const now = Date.now()
+    // Skip if recently fetched and not forced (backend also caches for 15s).
+    if (!force && page === 1 && jobs.value.length > 0 && now - _lastJobsFetchTime < JOBS_CACHE_TTL_MS) {
+      return
+    }
     isLoading.value = true
     error.value = null
     try {
       const { data } = await analyzeApi.listJobs({ page, page_size: 50 })
       jobs.value = data.data
       pagination.value = data.pagination
+      _lastJobsFetchTime = Date.now()
     } catch (err) {
       error.value = err instanceof Error ? err.message : String(err)
     } finally {

@@ -19,6 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_api_key, get_db
+from app.core.cache import cache_get, cache_set
 from app.models.job import Job
 from app.models.ucg import UCGEdge, UCGNode
 from app.schemas.job import PaginationMeta
@@ -105,7 +106,14 @@ async def get_graph(
     page = max(1, page)
     offset = (page - 1) * page_size
 
-    await _get_job_or_404(job_id, db)
+    job = await _get_job_or_404(job_id, db)
+
+    # Serve from cache for completed jobs.
+    cache_key = f"alm:graph:{job_id}:p{page}:ps{page_size}:e{int(include_edges)}"
+    if job.status == "complete":
+        cached = await cache_get(cache_key)
+        if cached:
+            return UCGGraphResponse(**cached)
 
     # Count total nodes for pagination.
     count_result = await db.execute(
@@ -139,7 +147,7 @@ async def get_graph(
         )
         edges = edges_result.scalars().all()
 
-    return UCGGraphResponse(
+    response = UCGGraphResponse(
         job_id=job_id,
         nodes=[_node_to_schema(n) for n in nodes],
         edges=[_edge_to_schema(e) for e in edges],
@@ -152,6 +160,11 @@ async def get_graph(
             has_prev=page > 1,
         ),
     )
+
+    if job.status == "complete":
+        await cache_set(cache_key, response.model_dump(), ttl=3600)
+
+    return response
 
 
 @router.get("/{job_id}/nodes", response_model=UCGNodeListResponse)
@@ -334,9 +347,16 @@ async def get_metrics(
     Get computed graph metrics for a job.
 
     Computes coupling statistics, cyclomatic complexity, and dead code counts
-    from the UCG node/edge data. Results are computed on-the-fly (not cached).
+    from the UCG node/edge data. Results are cached in Redis for completed jobs.
     """
-    await _get_job_or_404(job_id, db)
+    job = await _get_job_or_404(job_id, db)
+
+    # Serve from cache for completed jobs (metrics never change after completion).
+    cache_key = f"alm:metrics:{job_id}"
+    if job.status == "complete":
+        cached = await cache_get(cache_key)
+        if cached:
+            return GraphMetricsResponse(**cached)
 
     total_nodes = (
         await db.execute(
@@ -458,7 +478,7 @@ async def get_metrics(
         )
     ).scalar_one()
 
-    return GraphMetricsResponse(
+    response = GraphMetricsResponse(
         job_id=job_id,
         computed_at=datetime.now(UTC),
         summary=GraphMetricsSummary(
@@ -472,6 +492,11 @@ async def get_metrics(
         top_coupled_nodes=top_coupled,
         top_complex_functions=top_complex,
     )
+
+    if job.status == "complete":
+        await cache_set(cache_key, response.model_dump(), ttl=3600)
+
+    return response
 
 
 @router.post("/{job_id}/subgraph", response_model=SubgraphResponse)

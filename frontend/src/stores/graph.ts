@@ -41,6 +41,10 @@ export const useGraphStore = defineStore('graph', () => {
     showOrphans: true,
   })
 
+  // Track which job's data is currently loaded to skip redundant fetches.
+  const _loadedGraphJobId = ref<string | null>(null)
+  const _loadedMetricsJobId = ref<string | null>(null)
+
   // --- Getters ---
 
   /**
@@ -98,14 +102,18 @@ export const useGraphStore = defineStore('graph', () => {
   const hasData = computed(() => nodes.value.length > 0)
 
   // --- Actions ---
-  async function fetchGraph(jobId: string, page = 1): Promise<void> {
+  async function fetchGraph(jobId: string, page = 1, force = false): Promise<void> {
+    // Skip fetch if we already have data for this job (page 1 only — force to reload).
+    if (!force && page === 1 && _loadedGraphJobId.value === jobId && nodes.value.length > 0) {
+      return
+    }
     isLoading.value = true
     error.value = null
     try {
-      // TODO: implement pagination, append vs replace
       const { data } = await graphApi.getGraph(jobId, { page, include_edges: true })
       nodes.value = data.nodes
       edges.value = data.edges
+      _loadedGraphJobId.value = jobId
     } catch (err) {
       error.value = String(err)
     } finally {
@@ -114,14 +122,23 @@ export const useGraphStore = defineStore('graph', () => {
   }
 
   async function fetchNodeDetail(jobId: string, nodeId: string, depth = 1): Promise<void> {
+    // Skip if already selected.
+    if (selectedNodeId.value === nodeId && selectedNode.value) return
     selectedNodeId.value = nodeId
     const { data } = await graphApi.getNode(jobId, nodeId, depth)
     selectedNode.value = data
   }
 
-  async function fetchMetrics(jobId: string): Promise<void> {
+  async function fetchMetrics(jobId: string, force = false): Promise<void> {
+    if (!force && _loadedMetricsJobId.value === jobId && metrics.value) return
     const { data } = await graphApi.getMetrics(jobId)
     metrics.value = data
+    _loadedMetricsJobId.value = jobId
+  }
+
+  function invalidate(): void {
+    _loadedGraphJobId.value = null
+    _loadedMetricsJobId.value = null
   }
 
   function selectNode(nodeId: string | null): void {
@@ -152,6 +169,7 @@ export const useGraphStore = defineStore('graph', () => {
     fetchGraph,
     fetchNodeDetail,
     fetchMetrics,
+    invalidate,
     selectNode,
     setFilter,
     resetFilters,
