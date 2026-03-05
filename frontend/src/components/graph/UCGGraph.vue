@@ -112,7 +112,8 @@ function getNodeSize(lines: number): number {
 }
 
 // ── Cytoscape stylesheet ─────────────────────────────────────────────────────
-function buildStyle(): cytoscape.Stylesheet[] {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildStyle(): any[] {
   return [
     {
       selector: 'node',

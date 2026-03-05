@@ -226,7 +226,6 @@ function formatSmellType(type: SmellType): string {
 // ── Node type colors ─────────────────────────────────────────────────────────
 const NODE_COLORS: Partial<Record<NodeType, string>> = {
   CLASS:    '#6366f1',
-  INTERFACE:'#6366f1',
   METHOD:   '#22c55e',
   FUNCTION: '#22c55e',
   FILE:     '#a855f7',

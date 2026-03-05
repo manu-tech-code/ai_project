@@ -16,9 +16,11 @@ const client: AxiosInstance = axios.create({
   },
 })
 
-// Inject API key from localStorage on every request
+// Inject API key — localStorage takes precedence over env fallback
 client.interceptors.request.use((config) => {
-  const apiKey = localStorage.getItem(API_KEY_STORAGE_KEY)
+  const apiKey =
+    localStorage.getItem(API_KEY_STORAGE_KEY) ||
+    (import.meta.env.VITE_API_KEY as string | undefined)
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
   }
@@ -29,9 +31,10 @@ client.interceptors.request.use((config) => {
 client.interceptors.response.use(
   (response) => response,
   (error) => {
+    const detail = error.response?.data?.detail
     const message =
       error.response?.data?.message ??
-      error.response?.data?.detail ??
+      (typeof detail === 'string' ? detail : detail?.message) ??
       error.message ??
       'An unexpected error occurred'
 

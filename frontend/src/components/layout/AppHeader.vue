@@ -114,7 +114,7 @@ const uiStore = useUIStore()
 const analysisStore = useAnalysisStore()
 const route = useRoute()
 
-const hasApiKey = computed(() => !!localStorage.getItem('alm_api_key'))
+const hasApiKey = computed(() => !!(localStorage.getItem('alm_api_key') || import.meta.env.VITE_API_KEY))
 
 interface Crumb { label: string; to?: string }
 

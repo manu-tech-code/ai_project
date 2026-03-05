@@ -109,7 +109,7 @@ class AnalysisService:
             job.current_stage = None
             job.completed_at = datetime.now(UTC)
             job.updated_at = datetime.now(UTC)
-            await session.flush()
+            await session.commit()
 
             logger.info(
                 "Job completed successfully",
@@ -137,7 +137,7 @@ class AnalysisService:
             job.error_stage = job.current_stage
             job.updated_at = datetime.now(UTC)
             try:
-                await session.flush()
+                await session.commit()
             except Exception:
                 pass
 
@@ -219,7 +219,7 @@ class AnalysisService:
         job.updated_at = datetime.now(UTC)
         if job.started_at is None:
             job.started_at = datetime.now(UTC)
-        await session.flush()
+        await session.commit()
         logger.info(
             f"Job stage: {stage}",
             extra={"job_id": str(job.id), "status": status_value},
