@@ -58,6 +58,9 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     ucg_stats: null,
     smell_count: null,
     patch_count: null,
+    repo_url: null,
+    fix_branch: null,
+    fix_pr_url: null,
     ...overrides,
   }
 }

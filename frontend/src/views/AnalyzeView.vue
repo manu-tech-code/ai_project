@@ -2,7 +2,7 @@
   <div class="p-6 max-w-2xl mx-auto">
     <h1 class="text-2xl font-bold" style="color: var(--color-text)">New Analysis</h1>
     <p class="mt-1 text-sm" style="color: var(--color-text-secondary)">
-      Upload a .zip, .tar.gz, or .tgz archive of your legacy codebase to begin AI-powered analysis.
+      Upload a .zip, .tar.gz, or .tgz archive, or connect a Git repository to begin AI-powered analysis.
     </p>
 
     <!-- Form card -->
@@ -33,8 +33,92 @@
           />
         </div>
 
-        <!-- File dropzone -->
-        <div>
+        <!-- Source type toggle -->
+        <div class="flex gap-1 p-1 rounded-lg w-fit" style="background: var(--color-elevated)">
+          <button
+            @click="sourceMode = 'archive'"
+            class="px-3 py-1.5 text-xs rounded-md font-medium transition-all"
+            :style="sourceMode === 'archive'
+              ? 'background: var(--color-card); color: var(--color-text); box-shadow: 0 1px 3px rgba(0,0,0,0.3)'
+              : 'color: var(--color-text-muted)'"
+          >Upload Archive</button>
+          <button
+            @click="sourceMode = 'url'"
+            class="px-3 py-1.5 text-xs rounded-md font-medium transition-all"
+            :style="sourceMode === 'url'
+              ? 'background: var(--color-card); color: var(--color-text); box-shadow: 0 1px 3px rgba(0,0,0,0.3)'
+              : 'color: var(--color-text-muted)'"
+          >Git Repository</button>
+        </div>
+
+        <!-- Git URL form -->
+        <div v-if="sourceMode === 'url'" class="space-y-3">
+          <div>
+            <label class="block text-xs font-medium mb-1.5" style="color: var(--color-text-secondary)">
+              Repository URL <span style="color: var(--color-error)">*</span>
+            </label>
+            <input
+              v-model="repoUrl"
+              type="url"
+              placeholder="https://github.com/owner/repo"
+              :disabled="isSubmitting"
+              class="w-full px-3 py-2 text-sm rounded-md border focus:outline-none"
+              :style="{ background: 'var(--color-elevated)', borderColor: 'var(--color-border)', color: 'var(--color-text)' }"
+            />
+          </div>
+
+          <div>
+            <label class="block text-xs font-medium mb-1.5" style="color: var(--color-text-secondary)">
+              Branch <span style="color: var(--color-text-muted)">(optional)</span>
+            </label>
+            <input
+              v-model="repoBranch"
+              type="text"
+              placeholder="main"
+              :disabled="isSubmitting"
+              class="w-full px-3 py-2 text-sm rounded-md border focus:outline-none"
+              :style="{ background: 'var(--color-elevated)', borderColor: 'var(--color-border)', color: 'var(--color-text)' }"
+            />
+          </div>
+
+          <!-- Provider selection (if any configured) -->
+          <div v-if="vcsProviders.length > 0">
+            <label class="block text-xs font-medium mb-1.5" style="color: var(--color-text-secondary)">
+              VCS Provider <span style="color: var(--color-text-muted)">(for private repos)</span>
+            </label>
+            <select
+              v-model="repoProviderId"
+              :disabled="isSubmitting"
+              class="w-full px-3 py-2 text-sm rounded-md border focus:outline-none"
+              :style="{ background: 'var(--color-elevated)', borderColor: 'var(--color-border)', color: 'var(--color-text)' }"
+            >
+              <option value="">None (public repo)</option>
+              <option v-for="p in vcsProviders" :key="p.id" :value="p.id">{{ p.name }} ({{ p.provider }})</option>
+            </select>
+          </div>
+
+          <!-- One-time token (if no stored provider selected) -->
+          <div v-if="!repoProviderId">
+            <label class="block text-xs font-medium mb-1.5" style="color: var(--color-text-secondary)">
+              Personal Access Token <span style="color: var(--color-text-muted)">(optional, for private repos)</span>
+            </label>
+            <input
+              v-model="repoToken"
+              type="password"
+              placeholder="ghp_... (not stored)"
+              :disabled="isSubmitting"
+              class="w-full px-3 py-2 text-sm rounded-md border focus:outline-none font-mono"
+              :style="{ background: 'var(--color-elevated)', borderColor: 'var(--color-border)', color: 'var(--color-text)' }"
+            />
+            <p class="text-xs mt-1" style="color: var(--color-text-muted)">
+              Token is not stored. To save credentials, configure a provider in
+              <RouterLink to="/settings" class="underline" style="color: var(--color-primary)">Settings</RouterLink>.
+            </p>
+          </div>
+        </div>
+
+        <!-- File dropzone (archive mode) -->
+        <div v-if="sourceMode === 'archive'">
           <label
             class="block text-xs font-medium mb-1.5"
             style="color: var(--color-text-secondary)"
@@ -193,20 +277,16 @@
         </div>
 
         <!-- Submit button -->
-        <div class="flex items-center justify-between pt-1">
-          <p v-if="submitError" class="text-sm" style="color: var(--color-error)">
-            {{ submitError }}
-          </p>
-          <div v-else />
+        <div class="flex items-center justify-end pt-1">
           <BaseButton
             variant="primary"
             size="md"
-            :disabled="!selectedFile"
+            :disabled="sourceMode === 'archive' ? !selectedFile : !repoUrl.trim()"
             :loading="isSubmitting"
             type="submit"
             @click="submit"
           >
-            {{ isSubmitting ? 'Submitting…' : 'Start Analysis' }}
+            {{ isSubmitting ? 'Submitting...' : 'Start Analysis' }}
           </BaseButton>
         </div>
       </div>
@@ -257,22 +337,19 @@
         </div>
       </div>
 
-      <!-- Error message -->
-      <p v-if="currentJob.error" class="mt-4 text-sm p-3 rounded-md" style="background: rgba(239,68,68,0.1); color: #fca5a5">
-        {{ currentJob.error }}
-      </p>
     </BaseCard>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { RouterLink, useRouter } from 'vue-router'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseCard from '@/components/ui/BaseCard.vue'
+import { analyzeApi, vcsApi } from '@/api/endpoints'
 import { useAnalysisStore } from '@/stores/analysis'
 import { useUIStore } from '@/stores/ui'
-import type { Job, JobConfig } from '@/types'
+import type { Job, JobConfig, VCSProvider } from '@/types'
 
 const store = useAnalysisStore()
 const ui = useUIStore()
@@ -283,8 +360,26 @@ const selectedFile = ref<File | null>(null)
 const label = ref('')
 const isDragging = ref(false)
 const isSubmitting = ref(false)
-const submitError = ref<string | null>(null)
 const showConfig = ref(false)
+
+// Source mode
+const sourceMode = ref<'archive' | 'url'>('archive')
+const repoUrl = ref('')
+const repoBranch = ref('')
+const repoToken = ref('')
+const repoProviderId = ref('')
+const vcsProviders = ref<VCSProvider[]>([])
+
+async function loadVCSProviders(): Promise<void> {
+  try {
+    const { data } = await vcsApi.listProviders()
+    vcsProviders.value = data
+  } catch {
+    // silent — not critical
+  }
+}
+
+onMounted(loadVCSProviders)
 
 const config = ref<Partial<JobConfig>>({
   smell_severity_threshold: 'medium',
@@ -342,20 +437,33 @@ function formatFileSize(bytes: number): string {
 }
 
 async function submit(): Promise<void> {
-  if (!selectedFile.value) return
   isSubmitting.value = true
-  submitError.value = null
   try {
-    const job = await store.submitJob(
-      selectedFile.value,
-      label.value || undefined,
-      config.value,
-    )
+    let job: Job
+    if (sourceMode.value === 'url') {
+      if (!repoUrl.value.trim()) {
+        ui.notify({ type: 'error', title: 'Validation error', message: 'Repository URL is required.', duration: 5000 })
+        isSubmitting.value = false
+        return
+      }
+      const { data } = await analyzeApi.fromUrl({
+        repo_url: repoUrl.value.trim(),
+        branch: repoBranch.value.trim() || null,
+        provider_id: repoProviderId.value || null,
+        token: repoToken.value.trim() || null,
+        label: label.value || null,
+        config: config.value as Record<string, unknown>,
+      })
+      job = data
+    } else {
+      if (!selectedFile.value) return
+      job = await store.submitJob(selectedFile.value, label.value || undefined, config.value)
+    }
+    store.setActiveJob(job)
     store.startPolling(job.job_id)
-    ui.notify({ type: 'info', title: 'Analysis started', message: 'Monitoring pipeline progress…', duration: 4000 })
+    ui.notify({ type: 'info', title: 'Analysis started', message: 'Monitoring pipeline progress...', duration: 4000 })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    submitError.value = msg
     ui.notify({ type: 'error', title: 'Submission failed', message: msg, duration: 6000 })
   } finally {
     isSubmitting.value = false

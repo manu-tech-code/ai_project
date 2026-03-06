@@ -66,6 +66,10 @@ async def engine():
         from app.models import api_key  # noqa: F401, PLC0415
     except ImportError:
         pass
+    try:
+        from app.models import vcs  # noqa: F401, PLC0415
+    except ImportError:
+        pass
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

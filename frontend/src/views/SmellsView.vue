@@ -147,12 +147,6 @@
       />
     </div>
 
-    <!-- Error -->
-    <div v-else-if="loadError" class="text-center py-10">
-      <p class="text-sm" style="color: var(--color-error)">{{ loadError }}</p>
-      <button @click="forceReload" class="mt-2 text-xs underline" style="color: var(--color-primary)">Retry</button>
-    </div>
-
     <!-- Empty -->
     <div v-else-if="filteredSmells.length === 0" class="text-center py-16">
       <svg
@@ -317,7 +311,9 @@ async function reload(force = false): Promise<void> {
       summary.value = summaryRes.data
       _smellsCache.set(jobId, { smells: smells.value, summary: summary.value })
     } catch (err) {
-      loadError.value = err instanceof Error ? err.message : String(err)
+      const msg = err instanceof Error ? err.message : String(err)
+      loadError.value = msg
+      uiStore.notify({ type: 'error', title: 'Failed to load smells', message: msg, duration: 6000 })
     } finally {
       isLoading.value = false
       _inFlightFetch = null

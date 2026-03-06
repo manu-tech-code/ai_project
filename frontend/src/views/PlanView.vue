@@ -24,12 +24,6 @@
       <div v-for="i in 3" :key="i" class="h-36 rounded-xl animate-pulse" style="background: var(--color-card)" />
     </div>
 
-    <!-- Error -->
-    <div v-else-if="loadError" class="text-center py-10">
-      <p class="text-sm" style="color: var(--color-error)">{{ loadError }}</p>
-      <button @click="loadPlan" class="mt-2 text-xs underline" style="color: var(--color-primary)">Retry</button>
-    </div>
-
     <!-- Plan content -->
     <template v-else-if="plan">
       <!-- Summary card -->
@@ -225,7 +219,9 @@ async function loadPlan(force = false): Promise<void> {
       plan.value = data
       _planCache.set(jobId, data)
     } catch (err) {
-      loadError.value = err instanceof Error ? err.message : String(err)
+      const msg = err instanceof Error ? err.message : String(err)
+      loadError.value = msg
+      uiStore.notify({ type: 'error', title: 'Failed to load plan', message: msg, duration: 6000 })
     } finally {
       isLoading.value = false
       _inFlightFetch = null

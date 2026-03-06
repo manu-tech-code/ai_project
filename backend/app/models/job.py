@@ -45,6 +45,15 @@ class Job(Base):
     archive_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     archive_checksum: Mapped[str | None] = mapped_column(Text)  # SHA-256
 
+    # VCS integration — set when job was created from a repo URL.
+    repo_url: Mapped[str | None] = mapped_column(Text)
+    repo_branch: Mapped[str | None] = mapped_column(Text)
+    vcs_provider_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+    # Set after patches are pushed back to the repo.
+    fix_branch: Mapped[str | None] = mapped_column(Text)
+    fix_pr_url: Mapped[str | None] = mapped_column(Text)
+
     # Extracted code metadata — populated by LanguageDetector agent.
     languages: Mapped[list[str]] = mapped_column(
         ARRAY(Text), nullable=False, default=list

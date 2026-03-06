@@ -117,6 +117,7 @@ export interface JobSummary {
   file_count: number | null
   smell_count: number | null
   patch_count: number | null
+  repo_url: string | null
 }
 
 export interface Job extends JobSummary {
@@ -128,6 +129,9 @@ export interface Job extends JobSummary {
   stage_progress: Record<string, 'pending' | 'running' | 'complete' | 'failed'>
   error: string | null
   ucg_stats: { node_count: number; edge_count: number } | null
+  repo_url: string | null
+  fix_branch: string | null
+  fix_pr_url: string | null
 }
 
 // --- UCG ---
@@ -374,3 +378,26 @@ export interface CytoscapeEdgeData {
 export type CytoscapeElement =
   | { group: 'nodes'; data: CytoscapeNodeData }
   | { group: 'edges'; data: CytoscapeEdgeData }
+
+// --- VCS ---
+
+export type VCSProviderType = 'github' | 'gitlab' | 'bitbucket' | 'other'
+
+export interface VCSProvider {
+  id: string
+  name: string
+  provider: VCSProviderType
+  base_url: string | null
+  username: string | null
+  token_hint: string
+  created_at: string
+  updated_at: string
+}
+
+export interface VCSPushResult {
+  branch: string
+  commits: number
+  patches_applied: number
+  pr_url: string | null
+  message: string
+}

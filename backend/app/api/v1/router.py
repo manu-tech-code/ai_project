@@ -6,7 +6,7 @@ Mounted at /api/v1 in app/main.py.
 
 from fastapi import APIRouter
 
-from app.api.v1 import admin, analyze, graph, patches, plan, report, settings, smells, validate
+from app.api.v1 import admin, analyze, graph, patches, plan, report, settings, smells, validate, vcs
 
 router = APIRouter()
 
@@ -36,3 +36,6 @@ router.include_router(admin.router, prefix="/admin", tags=["admin"])
 
 # Runtime settings (LLM provider/model).
 router.include_router(settings.router, prefix="/settings", tags=["settings"])
+
+# VCS provider management and push-to-repo.
+router.include_router(vcs.router, prefix="/vcs", tags=["vcs"])

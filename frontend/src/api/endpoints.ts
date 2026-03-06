@@ -22,6 +22,8 @@ import type {
   UCGNode,
   UCGNodeDetail,
   ValidationResultResponse,
+  VCSProvider,
+  VCSPushResult,
 } from '@/types'
 
 // --- Analysis ---
@@ -37,6 +39,15 @@ export const analyzeApi = {
 
   listJobs: (params?: { page?: number; status?: string; page_size?: number }) =>
     client.get<PaginatedResponse<JobSummary>>('/analyze', { params }),
+
+  fromUrl: (body: {
+    repo_url: string
+    branch?: string | null
+    provider_id?: string | null
+    token?: string | null
+    label?: string | null
+    config?: Record<string, unknown>
+  }) => client.post<Job>('/analyze/from-url', body),
 
   stopJob: (jobId: string) =>
     client.post(`/analyze/${jobId}/stop`),
@@ -144,6 +155,14 @@ export const patchesApi = {
 
   exportPatches: (jobId: string) =>
     client.get(`/patches/${jobId}/export`, { responseType: 'blob' }),
+
+  pushToRepo: (jobId: string, body: {
+    branch_name?: string | null
+    provider_id?: string | null
+    token?: string | null
+    create_pr?: boolean
+    patch_ids?: string[] | null
+  }) => client.post<VCSPushResult>(`/patches/${jobId}/push`, body),
 }
 
 // --- Validation ---
@@ -157,6 +176,38 @@ export const validationApi = {
 
   rerun: (jobId: string) =>
     client.post(`/validate/${jobId}/rerun`),
+}
+
+// --- VCS ---
+
+export const vcsApi = {
+  listProviders: () =>
+    client.get<VCSProvider[]>('/vcs/providers'),
+
+  createProvider: (body: {
+    name: string
+    provider: string
+    base_url?: string | null
+    token: string
+    username?: string | null
+  }) => client.post<VCSProvider>('/vcs/providers', body),
+
+  updateProvider: (id: string, body: {
+    name?: string
+    base_url?: string | null
+    token?: string
+    username?: string | null
+  }) => client.patch<VCSProvider>(`/vcs/providers/${id}`, body),
+
+  deleteProvider: (id: string) =>
+    client.delete(`/vcs/providers/${id}`),
+
+  testConnection: (body: {
+    provider: string
+    base_url?: string | null
+    token: string
+    repo_url?: string | null
+  }) => client.post<{ success: boolean; message: string }>('/vcs/test', body),
 }
 
 // --- Report ---

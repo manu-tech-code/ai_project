@@ -35,6 +35,7 @@
       <!-- Primary nav -->
       <NavItem to="/" icon="⌂" label="Dashboard" :collapsed="uiStore.sidebarCollapsed" />
       <NavItem to="/analyze" icon="+" label="New Analysis" :collapsed="uiStore.sidebarCollapsed" />
+      <NavItem to="/settings" icon="&#x2699;" label="Settings" :collapsed="uiStore.sidebarCollapsed" />
 
       <!-- Job-scoped section -->
       <template v-if="analysisStore.activeJobId">
@@ -74,8 +75,9 @@
         <NavItem :to="`/jobs/${analysisStore.activeJobId}/graph`"   icon="◎" label="Graph"   :collapsed="uiStore.sidebarCollapsed" />
         <NavItem :to="`/jobs/${analysisStore.activeJobId}/smells`"  icon="⚠" label="Smells"  :collapsed="uiStore.sidebarCollapsed" />
         <NavItem :to="`/jobs/${analysisStore.activeJobId}/plan`"    icon="✦" label="Plan"    :collapsed="uiStore.sidebarCollapsed" />
-        <NavItem :to="`/jobs/${analysisStore.activeJobId}/patches`" icon="⊞" label="Patches" :collapsed="uiStore.sidebarCollapsed" />
-        <NavItem :to="`/jobs/${analysisStore.activeJobId}/report`"  icon="≡" label="Report"  :collapsed="uiStore.sidebarCollapsed" />
+        <NavItem :to="`/jobs/${analysisStore.activeJobId}/patches`"  icon="⊞" label="Patches"    :collapsed="uiStore.sidebarCollapsed" />
+        <NavItem :to="`/jobs/${analysisStore.activeJobId}/validate`" icon="✔" label="Validation" :collapsed="uiStore.sidebarCollapsed" />
+        <NavItem :to="`/jobs/${analysisStore.activeJobId}/report`"   icon="≡" label="Report"     :collapsed="uiStore.sidebarCollapsed" />
       </template>
     </nav>
 

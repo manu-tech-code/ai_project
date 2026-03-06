@@ -143,14 +143,6 @@
         <div v-for="i in 3" :key="i" class="h-14 rounded-lg animate-pulse" style="background: var(--color-elevated)" />
       </div>
 
-      <!-- Error -->
-      <div v-else-if="store.error" class="py-4">
-        <p class="text-sm text-center" style="color: var(--color-error)">
-          {{ store.error }}
-          <button @click="refresh" class="ml-2 underline">Retry</button>
-        </p>
-      </div>
-
       <!-- Empty state -->
       <div v-else-if="!store.jobs.length" class="py-12 text-center">
         <svg class="w-12 h-12 mx-auto mb-3" style="color: var(--color-text-muted)" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -353,7 +345,12 @@ function stageLabelStyle(stage: string): string {
 // ── Actions ──────────────────────────────────────────────────────────────────
 
 async function refresh(): Promise<void> {
-  await store.fetchJobs()
+  try {
+    await store.fetchJobs()
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    ui.notify({ type: 'error', title: 'Failed to load jobs', message: msg, duration: 6000 })
+  }
 }
 
 function openJob(job: JobSummary): void {
@@ -432,7 +429,12 @@ function stopPollingJobs(): void {
 }
 
 onMounted(async () => {
-  await store.fetchJobs()
+  try {
+    await store.fetchJobs()
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    ui.notify({ type: 'error', title: 'Failed to load jobs', message: msg, duration: 6000 })
+  }
   // Only start the auto-refresh interval if there are running jobs.
   if (runningCount.value > 0) startPollingJobs()
 })

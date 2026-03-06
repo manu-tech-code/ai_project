@@ -27,12 +27,6 @@
       </div>
     </div>
 
-    <!-- Error -->
-    <div v-else-if="loadError" class="text-center py-10">
-      <p class="text-sm" style="color: var(--color-error)">{{ loadError }}</p>
-      <button @click="loadReport" class="mt-2 text-xs underline" style="color: var(--color-primary)">Retry</button>
-    </div>
-
     <template v-else-if="report">
       <!-- Modernization score hero -->
       <div
@@ -381,7 +375,9 @@ async function loadReport(force = false): Promise<void> {
       _reportCache.set(jobId, data)
     })
     .catch((err) => {
-      loadError.value = err instanceof Error ? err.message : String(err)
+      const msg = err instanceof Error ? err.message : String(err)
+      loadError.value = msg
+      uiStore.notify({ type: 'error', title: 'Failed to load report', message: msg, duration: 6000 })
     })
     .finally(() => {
       isLoading.value = false

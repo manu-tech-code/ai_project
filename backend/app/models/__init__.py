@@ -8,6 +8,7 @@ from app.models.patch import Patch, ValidationResult
 from app.models.plan import Plan, PlanTask
 from app.models.smell import Smell
 from app.models.ucg import Embedding, UCGEdge, UCGNode
+from app.models.vcs import VCSProvider
 
 __all__ = [
     "APIKey",
@@ -21,4 +22,5 @@ __all__ = [
     "UCGEdge",
     "UCGNode",
     "ValidationResult",
+    "VCSProvider",
 ]

@@ -95,6 +95,9 @@ class JobResponse(BaseModel):
     ucg_stats: dict | None
     smell_count: int | None
     patch_count: int | None
+    repo_url: str | None = None
+    fix_branch: str | None = None
+    fix_pr_url: str | None = None
 
 
 class JobSummaryResponse(BaseModel):
@@ -112,6 +115,7 @@ class JobSummaryResponse(BaseModel):
     file_count: int | None
     smell_count: int | None
     patch_count: int | None
+    repo_url: str | None = None
 
 
 class PaginationMeta(BaseModel):

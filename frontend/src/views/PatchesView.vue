@@ -9,6 +9,9 @@
         </p>
       </div>
       <div class="flex items-center gap-3">
+        <BaseButton v-if="job?.repo_url" variant="primary" size="sm" @click="openPushModal">
+          Push to Repo
+        </BaseButton>
         <BaseButton variant="secondary" size="sm" @click="exportZip">
           Export ZIP
         </BaseButton>
@@ -81,11 +84,6 @@
     <!-- Loading skeleton -->
     <div v-if="isLoading" class="space-y-3">
       <div v-for="i in 5" :key="i" class="h-14 rounded-lg animate-pulse" style="background: var(--color-card)" />
-    </div>
-
-    <!-- Error -->
-    <div v-else-if="loadError" class="text-center py-10">
-      <p class="text-sm" style="color: var(--color-error)">{{ loadError }}</p>
     </div>
 
     <!-- Empty -->
@@ -275,6 +273,93 @@
         </BaseButton>
       </template>
     </BaseModal>
+
+    <!-- Push to repo modal -->
+    <BaseModal :open="pushModal.open" title="Push Patches to Repo" size="sm" @close="pushModal.open = false">
+      <!-- Success state -->
+      <div v-if="pushModal.result" class="space-y-3">
+        <div class="p-3 rounded-lg" style="background: rgba(34,197,94,0.1)">
+          <p class="text-sm font-semibold" style="color: #22c55e">
+            &#x2713; {{ pushModal.result.patches_applied }} file(s) pushed
+          </p>
+          <p class="text-xs mt-1" style="color: var(--color-text-secondary)">
+            Branch: <span class="font-mono">{{ pushModal.result.branch }}</span>
+          </p>
+        </div>
+        <a
+          v-if="pushModal.result.pr_url"
+          :href="pushModal.result.pr_url"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium"
+          style="background: rgba(99,102,241,0.15); color: #a5b4fc"
+        >
+          Open Pull Request &#x2192;
+        </a>
+        <p v-else class="text-xs" style="color: var(--color-text-muted)">
+          No PR created (non-GitHub or creation skipped).
+        </p>
+      </div>
+
+      <!-- Form state -->
+      <div v-else class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium mb-1.5" style="color: var(--color-text-secondary)">Branch name</label>
+          <input
+            v-model="pushModal.branchName"
+            type="text"
+            class="w-full px-3 py-2 text-sm rounded-md border font-mono"
+            :style="{ background: 'var(--color-elevated)', borderColor: 'var(--color-border)', color: 'var(--color-text)' }"
+          />
+        </div>
+
+        <div v-if="vcsProviders.length > 0">
+          <label class="block text-xs font-medium mb-1.5" style="color: var(--color-text-secondary)">Provider</label>
+          <select
+            v-model="pushModal.providerId"
+            class="w-full px-3 py-2 text-sm rounded-md border"
+            :style="{ background: 'var(--color-elevated)', borderColor: 'var(--color-border)', color: 'var(--color-text)' }"
+          >
+            <option value="">Auto (use job's provider)</option>
+            <option v-for="p in vcsProviders" :key="p.id" :value="p.id">{{ p.name }} ({{ p.provider }})</option>
+          </select>
+        </div>
+
+        <div v-if="!pushModal.providerId">
+          <label class="block text-xs font-medium mb-1.5" style="color: var(--color-text-secondary)">
+            Token <span style="color: var(--color-text-muted)">(if not using a stored provider)</span>
+          </label>
+          <input
+            v-model="pushModal.token"
+            type="password"
+            placeholder="ghp_..."
+            class="w-full px-3 py-2 text-sm rounded-md border font-mono"
+            :style="{ background: 'var(--color-elevated)', borderColor: 'var(--color-border)', color: 'var(--color-text)' }"
+          />
+        </div>
+
+        <label class="flex items-center gap-3 cursor-pointer">
+          <input v-model="pushModal.createPr" type="checkbox" class="w-4 h-4 rounded accent-indigo-500" />
+          <span class="text-sm" style="color: var(--color-text)">Create pull request (GitHub only)</span>
+        </label>
+
+      </div>
+
+      <template #footer>
+        <BaseButton variant="secondary" size="sm" @click="pushModal.open = false">
+          {{ pushModal.result ? 'Close' : 'Cancel' }}
+        </BaseButton>
+        <BaseButton
+          v-if="!pushModal.result"
+          variant="primary"
+          size="sm"
+          :loading="pushModal.loading"
+          @click="confirmPush"
+        >
+          Push Patches
+        </BaseButton>
+      </template>
+    </BaseModal>
   </div>
 </template>
 
@@ -285,9 +370,9 @@ import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseBadge from '@/components/ui/BaseBadge.vue'
 import BaseModal from '@/components/ui/BaseModal.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
-import { patchesApi } from '@/api/endpoints'
+import { analyzeApi, patchesApi, vcsApi } from '@/api/endpoints'
 import { useUIStore } from '@/stores/ui'
-import type { PatchDetail, PatchStatus, PatchSummary, PatchType } from '@/types'
+import type { Job, PatchDetail, PatchStatus, PatchSummary, PatchType, VCSProvider, VCSPushResult } from '@/types'
 
 // Module-level per-jobId cache — survives route navigation without re-fetching.
 const _patchesCache = new Map<string, PatchSummary[]>()
@@ -297,12 +382,14 @@ const route  = useRoute()
 const uiStore = useUIStore()
 const jobId = route.params.jobId as string
 
+const job        = ref<Job | null>(null)
 const patches    = ref<PatchSummary[]>([])
 const isLoading  = ref(false)
 const loadError  = ref<string | null>(null)
 const activeFilters    = ref<PatchStatus[]>([])
 const langFilter       = ref('')
 const validationFilter = ref('')
+const vcsProviders     = ref<VCSProvider[]>([])
 
 const COLUMNS = [
   { key: 'file',       label: 'File' },
@@ -466,7 +553,9 @@ async function reload(force = false): Promise<void> {
       _patchesCache.set(jobId, data.data)
     })
     .catch((err) => {
-      loadError.value = err instanceof Error ? err.message : String(err)
+      const msg = err instanceof Error ? err.message : String(err)
+      loadError.value = msg
+      uiStore.notify({ type: 'error', title: 'Failed to load patches', message: msg, duration: 6000 })
     })
     .finally(() => {
       isLoading.value = false
@@ -476,5 +565,67 @@ async function reload(force = false): Promise<void> {
   await promise
 }
 
-onMounted(() => reload())
+// ── Job info (for repo_url check) ─────────────────────────────────────────────
+async function loadJob(): Promise<void> {
+  try {
+    const { data } = await analyzeApi.getJob(jobId)
+    job.value = data
+  } catch {
+    // silent — push button simply won't show
+  }
+}
+
+// ── Push to repo ───────────────────────────────────────────────────────────────
+const pushModal = reactive({
+  open: false,
+  branchName: `alm/fixes-${jobId.slice(0, 8)}`,
+  providerId: '',
+  token: '',
+  createPr: true,
+  loading: false,
+  result: null as VCSPushResult | null,
+})
+
+async function openPushModal(): Promise<void> {
+  pushModal.branchName = `alm/fixes-${jobId.slice(0, 8)}`
+  pushModal.providerId = ''
+  pushModal.token = ''
+  pushModal.createPr = true
+  pushModal.result = null
+  pushModal.open = true
+  // Load providers for the selector
+  try {
+    const { data } = await vcsApi.listProviders()
+    vcsProviders.value = data
+  } catch {
+    // silent
+  }
+}
+
+async function confirmPush(): Promise<void> {
+  pushModal.loading = true
+  try {
+    const { data } = await patchesApi.pushToRepo(jobId, {
+      branch_name: pushModal.branchName,
+      provider_id: pushModal.providerId || null,
+      token: pushModal.token || null,
+      create_pr: pushModal.createPr,
+    })
+    pushModal.result = data
+    if (data.pr_url) {
+      uiStore.notify({ type: 'success', title: 'Pushed and PR created', message: data.message, duration: 6000 })
+    } else {
+      uiStore.notify({ type: 'success', title: 'Pushed to repo', message: data.message, duration: 5000 })
+    }
+  } catch (err) {
+    uiStore.notify({ type: 'error', title: 'Push failed', message: err instanceof Error ? err.message : String(err), duration: 6000 })
+  } finally {
+    pushModal.loading = false
+  }
+}
+
+onMounted(() => {
+  void reload()
+  void loadJob()
+})
 </script>

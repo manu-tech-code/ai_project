@@ -46,6 +46,9 @@ from app.schemas.job import (
     JobSummaryResponse,
     PaginationMeta,
 )
+from app.models.vcs import VCSProvider
+from app.schemas.vcs import VCSFromURLRequest
+from app.services import vcs as _vcs
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -97,6 +100,9 @@ def _build_job_response(job: Job) -> JobResponse:
         ucg_stats=ucg_stats,
         smell_count=job.smell_count,
         patch_count=job.patch_count,
+        repo_url=job.repo_url,
+        fix_branch=job.fix_branch,
+        fix_pr_url=job.fix_pr_url,
     )
 
 
@@ -212,9 +218,137 @@ async def _run_analysis_pipeline(job_id: uuid.UUID, repo_path: str) -> None:
             logger.exception("Analysis pipeline failed", extra={"job_id": str(job_id), "error": str(exc)})
 
 
+async def _enqueue_or_run_in_background(
+    job_id: uuid.UUID,
+    repo_path: str,
+    background_tasks: BackgroundTasks,
+) -> None:
+    """
+    Publish the job to the RabbitMQ alm.analyze queue if available.
+
+    Falls back to an in-process BackgroundTask when RabbitMQ is not reachable
+    so that local development still works without the broker.
+    """
+    try:
+        from app.services.queue.rabbitmq import get_rabbitmq_service  # noqa: PLC0415
+
+        mq = await get_rabbitmq_service()
+        if mq._available:
+            await mq.publish(job_id, "analyze", payload={"repo_path": repo_path})
+            logger.info("Job enqueued to RabbitMQ", extra={"job_id": str(job_id)})
+            return
+    except Exception as exc:
+        logger.warning(
+            "RabbitMQ publish failed, falling back to BackgroundTasks: %s", exc
+        )
+
+    background_tasks.add_task(_run_analysis_pipeline, job_id, repo_path)
+
+
 # ---------------------------------------------------------------------------
 # Route handlers
 # ---------------------------------------------------------------------------
+
+
+@router.post("/from-url", status_code=status.HTTP_202_ACCEPTED, response_model=JobSubmitResponse)
+async def submit_job_from_url(
+    body: VCSFromURLRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    _key: dict = Depends(get_current_api_key),
+) -> JobSubmitResponse:
+    """Submit an analysis job by providing a git repository URL.
+
+    The repo is cloned to a temp directory and the analysis pipeline is started.
+    Requires either a stored provider_id or a one-time token for private repos.
+    Public repos can be cloned without auth.
+    """
+    import asyncio  # noqa: PLC0415
+
+    repo_url = body.repo_url.strip()
+    token = body.token
+    provider_name = "github"
+    username = None
+
+    # Resolve stored provider if given.
+    if body.provider_id:
+        result = await db.execute(select(VCSProvider).where(VCSProvider.id == body.provider_id))
+        vcs_prov = result.scalar_one_or_none()
+        if vcs_prov is None:
+            raise HTTPException(status_code=404, detail={"error": "provider_not_found"})
+        token = token or vcs_prov.token
+        provider_name = vcs_prov.provider
+        username = vcs_prov.username
+
+    # Clone repo to a temp dir in jobs base.
+    jobs_base = os.environ.get("ALM_JOBS_DIR") or tempfile.gettempdir()
+    os.makedirs(jobs_base, exist_ok=True)
+    extract_dir = tempfile.mkdtemp(prefix="alm_job_", dir=jobs_base)
+
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: _vcs.clone_repo(
+                repo_url, extract_dir,
+                token=token, provider=provider_name, username=username, branch=body.branch,
+            ),
+        )
+    except Exception as exc:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"error": "clone_failed", "message": str(exc)},
+        ) from exc
+
+    # Parse optional config dict.
+    job_config: dict = {}
+    if body.config:
+        try:
+            validated = JobConfig(**body.config)
+            job_config = validated.model_dump()
+        except ValueError as exc:
+            shutil.rmtree(extract_dir, ignore_errors=True)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"error": "invalid_config", "message": str(exc)},
+            ) from exc
+
+    job = Job(
+        id=uuid.uuid4(),
+        label=body.label or repo_url.split("/")[-1].replace(".git", ""),
+        status="pending",
+        archive_filename=repo_url,
+        repo_url=repo_url,
+        repo_branch=body.branch,
+        vcs_provider_id=body.provider_id,
+        languages=[],
+        config=job_config,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    db.add(job)
+    await db.flush()
+    await db.refresh(job)
+    job_id = job.id
+
+    logger.info("Job created from URL", extra={"job_id": str(job_id), "repo_url": repo_url})
+    await cache_invalidate("alm:jobs:*")
+    await _enqueue_or_run_in_background(job_id, extract_dir, background_tasks)
+
+    base_url = "/api/v1"
+    return JobSubmitResponse(
+        job_id=job_id,
+        status="pending",
+        label=job.label,
+        created_at=job.created_at,
+        estimated_duration_seconds=300,
+        links={
+            "self": f"{base_url}/analyze/{job_id}",
+            "graph": f"{base_url}/graph/{job_id}",
+            "report": f"{base_url}/report/{job_id}",
+        },
+    )
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED, response_model=JobSubmitResponse)
@@ -305,8 +439,8 @@ async def submit_job(
     # Invalidate job list cache so the new job appears immediately.
     await cache_invalidate("alm:jobs:*")
 
-    # Start the analysis pipeline as a background task.
-    background_tasks.add_task(_run_analysis_pipeline, job_id, extract_dir)
+    # Enqueue to RabbitMQ (worker picks it up), or run in-process as fallback.
+    await _enqueue_or_run_in_background(job_id, extract_dir, background_tasks)
 
     base_url = "/api/v1"
     return JobSubmitResponse(

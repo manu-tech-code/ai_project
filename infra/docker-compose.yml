@@ -91,6 +91,31 @@ services:
       timeout: 10s
       retries: 5
 
+  worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    command: ["python", "-m", "app.workers.pipeline_worker"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/alm
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASS:-guest}@rabbitmq:5672/
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis}@redis:6379/0
+      JAVA_PARSER_URL: http://java-parser:8090
+      ALM_JOBS_DIR: /alm_jobs
+      OLLAMA_BASE_URL: http://host.docker.internal:1234/v1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - alm_jobs_data:/alm_jobs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    restart: on-failure
+
   frontend:
     build:
       context: ../frontend
