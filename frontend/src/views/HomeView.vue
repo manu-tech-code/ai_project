@@ -55,9 +55,12 @@
           </svg>
           <span class="text-sm font-semibold" style="color: var(--color-text)">Analysis in Progress</span>
         </div>
-        <div class="text-right">
-          <p class="text-xs font-medium" style="color: var(--color-text)">{{ liveJob.label || '(unlabeled)' }}</p>
-          <p class="text-xs font-mono" style="color: var(--color-text-muted)">{{ liveJob.job_id.slice(0, 16) }}…</p>
+        <div class="flex items-center gap-3">
+          <div class="text-right">
+            <p class="text-xs font-medium" style="color: var(--color-text)">{{ liveJob.label || '(unlabeled)' }}</p>
+            <p class="text-xs font-mono" style="color: var(--color-text-muted)">{{ liveJob.job_id.slice(0, 16) }}…</p>
+          </div>
+          <BaseButton variant="danger" size="xs" @click="stopLiveJob">Stop</BaseButton>
         </div>
       </div>
 
@@ -253,7 +256,8 @@
               <td class="px-5 py-3" @click.stop>
                 <div class="flex items-center gap-2">
                   <BaseButton v-if="isCompleted(job.status)" variant="ghost" size="xs" @click="openJob(job)">View</BaseButton>
-                  <BaseButton v-if="canCancel(job.status)" variant="ghost" size="xs" @click="cancelJob(job.job_id)">Cancel</BaseButton>
+                  <BaseButton v-if="isRunningStatus(job.status)" variant="danger" size="xs" @click="handleStop(job.job_id)">Stop</BaseButton>
+                  <BaseButton variant="ghost" size="xs" style="color: var(--color-error)" @click="handleDelete(job.job_id)">Delete</BaseButton>
                 </div>
               </td>
             </tr>
@@ -265,16 +269,18 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, onMounted, onUnmounted } from 'vue'
+import { computed, defineComponent, h, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseBadge from '@/components/ui/BaseBadge.vue'
 import BaseCard from '@/components/ui/BaseCard.vue'
 import StatusBadge from '@/components/ui/StatusBadge.vue'
 import { useAnalysisStore } from '@/stores/analysis'
+import { useUIStore } from '@/stores/ui'
 import type { JobSummary, JobStatus } from '@/types'
 
 const store = useAnalysisStore()
+const ui = useUIStore()
 const router = useRouter()
 
 const PIPELINE_STAGES = ['detecting', 'mapping', 'analyzing', 'planning', 'transforming', 'validating'] as const
@@ -359,12 +365,32 @@ function isCompleted(status: JobStatus): boolean {
   return ['complete', 'failed', 'cancelled'].includes(status)
 }
 
-function canCancel(status: JobStatus): boolean {
-  return ['pending', ...PIPELINE_STAGES].includes(status as string)
+async function stopLiveJob(): Promise<void> {
+  if (!liveJob.value) return
+  try {
+    await store.stopJob(liveJob.value.job_id)
+    ui.notify({ type: 'warning', title: 'Job stopped', message: 'The analysis was cancelled.', duration: 4000 })
+  } catch {
+    ui.notify({ type: 'error', title: 'Stop failed', message: 'Could not stop the job. Try again.', duration: 5000 })
+  }
 }
 
-async function cancelJob(jobId: string): Promise<void> {
-  await store.cancelJob(jobId)
+async function handleStop(jobId: string): Promise<void> {
+  try {
+    await store.stopJob(jobId)
+    ui.notify({ type: 'warning', title: 'Job stopped', message: 'The analysis was cancelled.', duration: 4000 })
+  } catch {
+    ui.notify({ type: 'error', title: 'Stop failed', message: 'Could not stop the job. Try again.', duration: 5000 })
+  }
+}
+
+async function handleDelete(jobId: string): Promise<void> {
+  try {
+    await store.cancelJob(jobId)
+    ui.notify({ type: 'success', title: 'Job deleted', duration: 3000 })
+  } catch {
+    ui.notify({ type: 'error', title: 'Delete failed', message: 'Could not delete the job. Try again.', duration: 5000 })
+  }
 }
 
 // ── Formatting ───────────────────────────────────────────────────────────────
@@ -386,17 +412,37 @@ function formatDuration(seconds: number): string {
 
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
+function startPollingJobs(): void {
+  if (refreshTimer !== null) return
+  refreshTimer = setInterval(() => {
+    if (runningCount.value > 0) {
+      store.fetchJobs()
+    } else {
+      // All jobs finished — no point burning bandwidth, stop the timer.
+      stopPollingJobs()
+    }
+  }, 4000)
+}
+
+function stopPollingJobs(): void {
+  if (refreshTimer !== null) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
+  }
+}
+
 onMounted(async () => {
   await store.fetchJobs()
-  // Auto-refresh every 4s while jobs are running
-  refreshTimer = setInterval(() => {
-    if (runningCount.value > 0) store.fetchJobs()
-  }, 4000)
+  // Only start the auto-refresh interval if there are running jobs.
+  if (runningCount.value > 0) startPollingJobs()
 })
 
-onUnmounted(() => {
-  if (refreshTimer !== null) clearInterval(refreshTimer)
+// If a new job starts while this view is mounted, kick off the interval.
+watch(runningCount, (count) => {
+  if (count > 0) startPollingJobs()
 })
+
+onUnmounted(stopPollingJobs)
 
 // ── StatCard inline component ────────────────────────────────────────────────
 type StatColor = 'indigo' | 'green' | 'yellow' | 'red'

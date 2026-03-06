@@ -114,19 +114,23 @@ interface AnalysisState {
   activeJobId: string | null
   isLoading: boolean
   isPolling: boolean
-  pollInterval: number   // ms, default 3000
   error: string | null
   pagination: PaginationMeta | null
 }
 
+// Internal constants (not reactive state):
+// POLL_INTERVAL_MS = 3000
+// JOBS_CACHE_TTL_MS = 15_000  (matches 15s backend Redis TTL)
+
 // Actions
 interface AnalysisActions {
-  submitJob(archive: File, label: string, config: Partial<JobConfig>): Promise<Job>
+  submitJob(archive: File, label?: string, config?: Partial<JobConfig>): Promise<Job>
   fetchJob(jobId: string): Promise<Job>
-  fetchJobs(page?: number, filters?: JobFilters): Promise<void>
+  fetchJobs(page?: number, force?: boolean): Promise<void>
   startPolling(jobId: string): void
   stopPolling(): void
   cancelJob(jobId: string): Promise<void>
+  setActiveJob(job: Job): void
   clearError(): void
 }
 
@@ -139,10 +143,13 @@ interface AnalysisGetters {
 }
 ```
 
-**Polling Logic:** When `startPolling(jobId)` is called, it sets up a `useInterval` composable
-at `pollInterval` ms. Polling stops automatically when job status becomes `complete`, `failed`,
-or `cancelled`. Status transitions trigger Pinia state updates, which reactively update all
-subscribed components.
+**Polling Logic:** When `startPolling(jobId)` is called, it creates a `setInterval` at
+`POLL_INTERVAL_MS` (3000ms). Polling stops automatically when `isJobComplete` becomes `true`
+(status `complete`, `failed`, or `cancelled`).
+
+**Job List Caching:** `fetchJobs` skips the API call if called within `JOBS_CACHE_TTL_MS` (15s)
+of the last fetch (mirrors the 15s Redis TTL on the backend). Cache is bypassed when `force=true`
+or after `submitJob` (which resets the TTL timestamp to 0).
 
 ---
 
@@ -159,7 +166,6 @@ interface GraphState {
   selectedNode: UCGNodeDetail | null
   filters: GraphFilters
   isLoading: boolean
-  pagination: PaginationMeta | null
   error: string | null
 }
 
@@ -172,10 +178,10 @@ interface GraphFilters {
 
 // Actions
 interface GraphActions {
-  fetchGraph(jobId: string, page?: number): Promise<void>
+  fetchGraph(jobId: string, page?: number, force?: boolean): Promise<void>
   fetchNodeDetail(jobId: string, nodeId: string, depth?: number): Promise<void>
-  fetchMetrics(jobId: string): Promise<void>
-  fetchSubgraph(jobId: string, seedNodeIds: string[], depth: number): Promise<void>
+  fetchMetrics(jobId: string, force?: boolean): Promise<void>
+  invalidate(): void   // reset loaded-job tracking (called after new job submission)
   selectNode(nodeId: string | null): void
   setFilter(filter: Partial<GraphFilters>): void
   resetFilters(): void
@@ -185,7 +191,6 @@ interface GraphActions {
 interface GraphGetters {
   cytoscapeElements: ComputedRef<CytoscapeElement[]>  // formatted for cytoscape
   filteredNodes: ComputedRef<UCGNode[]>
-  nodeTypeStats: ComputedRef<Record<NodeType, number>>
   hasData: ComputedRef<boolean>
 }
 ```
@@ -193,6 +198,10 @@ interface GraphGetters {
 **Cytoscape Integration:** `cytoscapeElements` getter transforms `nodes` and `edges` into the
 `{ data: {...}, group: 'nodes'|'edges' }` format expected by Cytoscape.js. Node color is mapped
 by `node_type`, size by `line_end - line_start` (clamped to min/max range).
+
+**Graph Caching:** `fetchGraph` and `fetchMetrics` track the last loaded `job_id` internally
+(`_loadedGraphJobId`, `_loadedMetricsJobId`). Subsequent calls for the same job are no-ops unless
+`force=true`. Calling `invalidate()` resets this tracking, triggering a fresh fetch on next access.
 
 ---
 
@@ -442,9 +451,9 @@ const client: AxiosInstance = axios.create({
   },
 })
 
-// Request interceptor: inject API key from localStorage
+// Request interceptor: inject API key from localStorage or VITE_API_KEY env var
 client.interceptors.request.use((config) => {
-  const apiKey = localStorage.getItem('alm_api_key')
+  const apiKey = getApiKey()
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
   }
@@ -461,6 +470,26 @@ client.interceptors.response.use(
 )
 
 export default client
+
+// Helper: read API key from localStorage (falls back to VITE_API_KEY env var)
+export function getApiKey(): string | null {
+  return localStorage.getItem('alm_api_key') || (import.meta.env.VITE_API_KEY as string | undefined) || null
+}
+
+// Helper: set API key in localStorage
+export function setApiKey(key: string): void {
+  localStorage.setItem('alm_api_key', key)
+}
+
+// Bootstrap: call open POST /admin/api-keys/generate to obtain a key on first load
+// Called from App.vue onMounted when no key is found in localStorage
+export async function generateAndSaveApiKey(): Promise<string> {
+  const baseURL = import.meta.env.VITE_API_BASE_URL ?? '/api/v1'
+  const response = await axios.post<{ key: string }>(`${baseURL}/admin/api-keys/generate`)
+  const key = response.data.key
+  setApiKey(key)
+  return key
+}
 ```
 
 ---

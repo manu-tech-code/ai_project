@@ -146,6 +146,18 @@ export const useAnalysisStore = defineStore('analysis', () => {
     }
   }
 
+  async function stopJob(jobId: string): Promise<void> {
+    try {
+      await analyzeApi.stopJob(jobId)
+      const job = jobs.value.find((j) => j.job_id === jobId)
+      if (job) job.status = 'cancelled' as any
+      if (activeJobId.value === jobId) stopPolling()
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : String(err)
+      throw err
+    }
+  }
+
   function setActiveJob(job: Job): void {
     activeJob.value = job
     activeJobId.value = job.job_id
@@ -176,6 +188,7 @@ export const useAnalysisStore = defineStore('analysis', () => {
     startPolling,
     stopPolling,
     cancelJob,
+    stopJob,
     setActiveJob,
     clearError,
   }

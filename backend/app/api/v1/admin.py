@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_scope
+from app.core.cache import cache_get, cache_set
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.security import generate_api_key, hash_api_key
@@ -70,6 +71,10 @@ class APIKeyListItem(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+_HEALTH_CACHE_KEY = "alm:health"
+_HEALTH_TTL = 5  # seconds — short so stale health data ages out quickly
+
+
 @router.get("/health", include_in_schema=True)
 async def health(db: AsyncSession = Depends(get_db)) -> dict:
     """
@@ -77,7 +82,14 @@ async def health(db: AsyncSession = Depends(get_db)) -> dict:
 
     Checks connectivity to: PostgreSQL, Redis, RabbitMQ, and java-parser service.
     Returns HTTP 503 if any critical dependency is unavailable.
+
+    Response is cached for 5 seconds to avoid hammering dependencies on
+    every UI refresh or load-balancer probe.
     """
+    cached = await cache_get(_HEALTH_CACHE_KEY)
+    if cached:
+        return cached
+
     settings = get_settings()
     services: dict[str, dict] = {}
     all_ok = True
@@ -129,13 +141,15 @@ async def health(db: AsyncSession = Depends(get_db)) -> dict:
 
     response_status = "ok" if all_ok else "degraded"
 
-    return {
+    result = {
         "status": response_status,
         "version": settings.app_version,
         "environment": settings.ALM_ENV,
         "timestamp": datetime.now(UTC).isoformat(),
         "services": services,
     }
+    await cache_set(_HEALTH_CACHE_KEY, result, ttl=_HEALTH_TTL)
+    return result
 
 
 # ---------------------------------------------------------------------------

@@ -257,6 +257,10 @@ import { reportApi } from '@/api/endpoints'
 import { useUIStore } from '@/stores/ui'
 import type { Report, Severity } from '@/types'
 
+// Module-level per-jobId cache — survives route navigation without re-fetching.
+const _reportCache = new Map<string, Report>()
+const _reportInFlight = new Map<string, Promise<void>>()
+
 const route  = useRoute()
 const uiStore = useUIStore()
 const jobId = route.params.jobId as string
@@ -358,24 +362,40 @@ async function exportMarkdown(): Promise<void> {
 }
 
 // ── Data load ─────────────────────────────────────────────────────────────────
-async function loadReport(): Promise<void> {
+async function loadReport(force = false): Promise<void> {
+  if (!force && _reportCache.has(jobId)) {
+    report.value = _reportCache.get(jobId)!
+    return
+  }
+  const inflight = _reportInFlight.get(jobId)
+  if (inflight) {
+    await inflight
+    report.value = _reportCache.get(jobId) ?? null
+    return
+  }
   isLoading.value = true
   loadError.value = null
-  try {
-    const { data } = await reportApi.getReport(jobId)
-    report.value = data
-  } catch (err) {
-    loadError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    isLoading.value = false
-  }
+  const promise = reportApi.getReport(jobId)
+    .then(({ data }) => {
+      report.value = data
+      _reportCache.set(jobId, data)
+    })
+    .catch((err) => {
+      loadError.value = err instanceof Error ? err.message : String(err)
+    })
+    .finally(() => {
+      isLoading.value = false
+      _reportInFlight.delete(jobId)
+    })
+  _reportInFlight.set(jobId, promise)
+  await promise
 }
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString()
 }
 
-onMounted(loadReport)
+onMounted(() => loadReport())
 
 // ── MetricCard inline component ───────────────────────────────────────────────
 type CardColor = 'red' | 'indigo' | 'orange' | 'green'

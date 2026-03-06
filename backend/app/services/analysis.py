@@ -24,6 +24,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.job import Job
 
@@ -48,6 +49,10 @@ class AnalysisService:
 
     def __init__(self, db: AsyncSession) -> None:
         self._db = db
+        self._settings = get_settings()
+        # Resolve the LLM provider once per pipeline run
+        from app.services.llm.base import get_llm_provider  # noqa: PLC0415
+        self._llm = get_llm_provider(self._settings)
 
     # ------------------------------------------------------------------
     # Public interface
@@ -127,6 +132,14 @@ class AnalysisService:
 
         except Exception as exc:
             tb = traceback.format_exc()
+            # Re-fetch job status — it may have been cancelled externally.
+            refreshed = await self._get_job(job_id, session)
+            if refreshed and refreshed.status == "cancelled":
+                logger.info(
+                    "Job stopped by user",
+                    extra={"job_id": str(job_id), "stage": job.current_stage},
+                )
+                return
             logger.error(
                 "Job failed",
                 extra={
@@ -363,6 +376,7 @@ class AnalysisService:
                 repo_path=Path("/tmp"),  # not needed at this stage
                 db_session=session,
                 job_config=job.config or {},
+                llm_provider=self._llm,
             )
             ctx.languages = job.languages or []
             detector = SmellDetectorAgent()
@@ -388,6 +402,7 @@ class AnalysisService:
                 repo_path=Path("/tmp"),
                 db_session=session,
                 job_config=job.config or {},
+                llm_provider=self._llm,
             )
             ctx.languages = job.languages or []
             planner = PlannerAgent()
@@ -410,6 +425,7 @@ class AnalysisService:
                 repo_path=Path("/tmp"),
                 db_session=session,
                 job_config=job.config or {},
+                llm_provider=self._llm,
             )
             ctx.languages = job.languages or []
             transformer = TransformerAgent()
@@ -456,6 +472,7 @@ class AnalysisService:
             repo_path=Path("/tmp"),
             db_session=session,
             job_config=job.config or {},
+            llm_provider=self._llm,
         )
         ctx.languages = job.languages or []
         learner = LearnerAgent()

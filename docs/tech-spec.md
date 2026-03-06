@@ -70,6 +70,9 @@ ALM is composed of seven runtime components:
 4. **Immutability** - Completed jobs, patches, and reports are never mutated. New versions create new records.
 5. **LLM Abstraction** - All LLM calls go through a provider abstraction layer, making the primary provider
    (Anthropic) swappable with fallback to OpenAI.
+6. **Redis Caching** - `app/core/cache.py` provides `cache_get`, `cache_set`, `cache_invalidate` helpers.
+   Job lists are cached for 15 seconds; graph data and metrics for 1 hour (completed jobs only). Cache is
+   invalidated on job creation and completion. All cache operations fail silently if Redis is unavailable.
 
 ---
 
@@ -128,7 +131,7 @@ ALM is composed of seven runtime components:
 ```
                      +--------------------------------------------------+
                      |                  CLIENT BROWSER                  |
-                     |              Vue 3 SPA (port 80)                 |
+                     |              Vue 3 SPA (port 8080)                |
                      +---------------------+----------------------------+
                                            | HTTPS / WSS
                      +---------------------v----------------------------+
@@ -163,11 +166,11 @@ ALM is composed of seven runtime components:
 |  - ucg_edges     |                    |
 |  - smells        |         +----------v-----------------------+
 |  - plans         |         |  Java Parser Service             |
-|  - patches       |         |  Spring Boot 3.4.2 :8080         |
+|  - patches       |         |  Spring Boot 3.4.2 :8090         |
 |  - validations   |         |  JavaParser 3.26.2               |
 |  - reports       |         |                                  |
 |  - api_keys      |         |  REST POST /parse                |
-|  - embeddings    |         |  Input:  .java source zip        |
+|  - embeddings    |         |  Input:  {"repoPath": "/alm_jobs/..."} |
 +------------------+         |  Output: UCG node/edge JSON      |
                              +----------------------------------+
 ```
@@ -420,7 +423,7 @@ using SQLAlchemy `insert()` for PostgreSQL throughput efficiency.
 | Input | UCG nodes/edges from DB for `job_id` |
 | Output | `list[SmellResult]` |
 | DB Writes | Inserts into `smells` |
-| LLM | Yes -- `claude-3-5-sonnet-20241022` |
+| LLM | Yes -- `claude-opus-4-6` |
 | External Services | No |
 
 ```python
@@ -476,7 +479,7 @@ class SmellType(str, Enum):
 | Input | `list[SmellResult]` from DB |
 | Output | `RefactorPlan` |
 | DB Writes | Inserts into `plans` and `plan_tasks` |
-| LLM | Yes -- `claude-3-5-sonnet-20241022` |
+| LLM | Yes -- `claude-opus-4-6` |
 | External Services | No |
 
 ```python
@@ -530,7 +533,7 @@ class RefactorPattern(str, Enum):
 | Input | `RefactorPlan` from DB |
 | Output | `list[CodePatch]` |
 | DB Writes | Inserts into `patches` |
-| LLM | Yes -- `claude-3-5-sonnet-20241022` with extended thinking for complex transforms |
+| LLM | Yes -- `claude-opus-4-6` with extended thinking for complex transforms |
 | External Services | No |
 
 ```python
@@ -703,13 +706,14 @@ endpoints except `/api/v1/health`). See `docs/api-spec.md` for full request/resp
 
 ### 7.8 Admin Endpoints
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | System health check (no auth required) |
-| `GET` | `/admin/metrics` | Prometheus-format application metrics |
-| `POST` | `/admin/api-keys` | Create a new API key |
-| `GET` | `/admin/api-keys` | List all API keys |
-| `DELETE` | `/admin/api-keys/{key_id}` | Revoke an API key |
+| Method | Path | Auth Required | Description |
+|---|---|---|---|
+| `GET` | `/health` | No | System health check |
+| `GET` | `/admin/metrics` | Yes (admin) | Prometheus-format application metrics |
+| `POST` | `/admin/api-keys/generate` | No | Bootstrap: auto-generate a read+write key (used by frontend on first load) |
+| `POST` | `/admin/api-keys` | Yes (admin) | Create a new API key with custom scopes |
+| `GET` | `/admin/api-keys` | Yes (admin) | List all API keys |
+| `DELETE` | `/admin/api-keys/{key_id}` | Yes (admin) | Revoke an API key |
 
 ---
 
@@ -814,16 +818,17 @@ Exchange: alm.dlq (fanout, durable)
 All LLM calls go through `app.services.llm.base.LLMProvider` (abstract base class). The interface
 exposes two methods: `complete(prompt, ...)` and `embed(texts)`. Concrete implementations:
 
-- `AnthropicProvider` -- primary, uses `claude-3-5-sonnet-20241022`
+- `AnthropicProvider` -- primary, uses `claude-opus-4-6` (configurable via `ANTHROPIC_MODEL` env var)
 - `OpenAIProvider` -- fallback, uses `gpt-4o` for completion, `text-embedding-3-small` for embeddings
+- `StubProvider` -- no-op implementation used in unit tests (no LLM API calls)
 
 ### Model Selection Per Agent
 
 | Agent | Model | Justification |
 |---|---|---|
-| SmellDetector | claude-3-5-sonnet-20241022 | Best code reasoning, structured JSON output |
-| Planner | claude-3-5-sonnet-20241022 | Complex multi-step planning with dependency graph |
-| Transformer | claude-3-5-sonnet-20241022 | Accurate code generation, tool-use for structured output |
+| SmellDetector | claude-opus-4-6 | Best code reasoning, structured JSON output |
+| Planner | claude-opus-4-6 | Complex multi-step planning with dependency graph |
+| Transformer | claude-opus-4-6 | Accurate code generation, tool-use for structured output |
 | Learner | text-embedding-3-small | Cost-efficient embeddings, 1536 dims matches pgvector config |
 
 ### Rate Limiting & Retry Policy
@@ -881,16 +886,20 @@ exposes two methods: `complete(prompt, ...)` and `embed(texts)`. Concrete implem
 
 ### Docker Compose Services
 
-| Service | Image | Port(s) | Depends On |
-|---|---|---|---|
-| `postgres` | postgres:16-alpine | 5432 | -- |
-| `redis` | redis:7.4-alpine | 6379 | -- |
-| `rabbitmq` | rabbitmq:3.13-management | 5672, 15672 | -- |
-| `backend` | ./backend (Dockerfile) | 8000 | postgres, redis, rabbitmq |
-| `java-parser` | ./java-parser-service (Dockerfile) | 8080 | -- |
-| `nginx` | nginx:1.27-alpine | 80, 443 | backend |
+| Service | Image | Port(s) | Depends On | Notes |
+|---|---|---|---|---|
+| `postgres` | postgres:16-alpine | 5432 | -- | |
+| `redis` | redis:7.4-alpine | 6379 | -- | |
+| `rabbitmq` | rabbitmq:3.13-management | 5672, 15672 | -- | |
+| `backend` | ./backend (Dockerfile) | 8000 | postgres, redis, rabbitmq | Mounts `alm_jobs_data` at `/alm_jobs` |
+| `java-parser` | ./java-parser-service (Dockerfile) | 8090 | -- | Mounts `alm_jobs_data` at `/alm_jobs` |
+| `nginx` | nginx:1.27-alpine | 8080 | backend | Serves SPA; proxies `/api/*` to backend |
 
 Frontend is built as static assets during Docker image build and served by nginx.
+
+**Shared Volume:** `alm_jobs_data` is a named Docker volume mounted at `/alm_jobs` in both the
+`backend` and `java-parser` containers. The backend extracts uploaded archives here so that the
+Java Parser Service can read them directly via filesystem path (sent as `repoPath` in the JSON body).
 
 ### Backend Environment Variables
 
@@ -911,7 +920,10 @@ ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
 
 # Services
-JAVA_PARSER_URL=http://java-parser:8080
+JAVA_PARSER_URL=http://java-parser:8090
+
+# Job storage (shared volume path — also mounted in java-parser container)
+ALM_JOBS_DIR=/alm_jobs
 
 # Application
 SECRET_KEY=<random-256-bit-hex>

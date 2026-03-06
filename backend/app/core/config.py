@@ -41,13 +41,19 @@ class Settings(BaseSettings):
     rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
 
     # LLM
-    llm_provider: str = "anthropic"  # anthropic | openai
+    llm_provider: str = "anthropic"  # anthropic | openai | ollama
     ANTHROPIC_API_KEY: str = ""
     anthropic_api_key: str = ""
     OPENAI_API_KEY: str = ""
     openai_api_key: str = ""
     llm_model: str = "claude-opus-4-6"
     llm_max_tokens: int = 4096
+
+    # Ollama (local models)
+    ollama_base_url: str = "http://127.0.0.1:11434/v1"
+    ollama_model: str = "qwen2.5-coder-3b-b2b-website"
+    ollama_embed_model: str = "text-embedding-nomic-embed-text-v1.5"
+    ollama_timeout: int = 300  # seconds; local inference can be slow on CPU
 
     # Java parser service
     JAVA_PARSER_URL: str = "http://localhost:8080"

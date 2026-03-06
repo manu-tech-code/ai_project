@@ -112,10 +112,15 @@ class StubProvider(LLMProvider):
         )
 
 
+# Runtime overrides — updated via PATCH /api/v1/settings/llm without restart.
+_runtime_llm_override: dict = {}
+
+
 def get_llm_provider(settings) -> LLMProvider:
     """
     Factory: returns the configured LLM provider based on settings.
     Falls back to StubProvider if no valid API key is found.
+    Runtime overrides in _runtime_llm_override take precedence over config.
     """
     anthropic_key = (
         settings.get_effective_anthropic_key() if hasattr(settings, "get_effective_anthropic_key")
@@ -125,9 +130,15 @@ def get_llm_provider(settings) -> LLMProvider:
         settings.get_effective_openai_key() if hasattr(settings, "get_effective_openai_key")
         else (settings.OPENAI_API_KEY or "")
     )
-    provider_pref = getattr(settings, "llm_provider", "anthropic")
+    provider_pref = _runtime_llm_override.get("provider") or getattr(settings, "llm_provider", "anthropic")
 
-    if provider_pref == "anthropic" and anthropic_key:
+    if provider_pref == "ollama":
+        from app.services.llm.ollama_provider import OllamaProvider
+        provider = OllamaProvider()
+        if "model" in _runtime_llm_override:
+            provider._model = _runtime_llm_override["model"]
+        return provider
+    elif provider_pref == "anthropic" and anthropic_key:
         from app.services.llm.anthropic_provider import AnthropicProvider
         return AnthropicProvider()
     elif openai_key:

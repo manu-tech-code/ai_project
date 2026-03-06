@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_api_key, get_db
+from app.core.cache import cache_get, cache_set
 from app.models.job import Job, Report
 from app.models.patch import Patch, ValidationResult
 from app.models.plan import Plan, PlanTask
@@ -118,15 +119,26 @@ async def _build_report_json(job: Job, db: AsyncSession) -> dict:
         by_patch_type[patch.patch_type] = by_patch_type.get(patch.patch_type, 0) + 1
 
     if patches_generated > 0:
-        for patch in patches:
-            vr_result = await db.execute(
-                select(ValidationResult.passed)
-                .where(ValidationResult.patch_id == patch.id)
-                .order_by(ValidationResult.created_at.desc())
-                .limit(1)
+        # Batch-fetch the latest validation result per patch in 2 queries (no N+1).
+        patch_ids = [p.id for p in patches]
+        latest_vr_subq = (
+            select(
+                ValidationResult.patch_id,
+                func.max(ValidationResult.created_at).label("max_created_at"),
             )
-            if vr_result.scalar_one_or_none() is True:
-                patches_passed += 1
+            .where(ValidationResult.patch_id.in_(patch_ids))
+            .group_by(ValidationResult.patch_id)
+            .subquery()
+        )
+        vr_rows = await db.execute(
+            select(ValidationResult.patch_id, ValidationResult.passed)
+            .join(
+                latest_vr_subq,
+                (ValidationResult.patch_id == latest_vr_subq.c.patch_id)
+                & (ValidationResult.created_at == latest_vr_subq.c.max_created_at),
+            )
+        )
+        patches_passed = sum(1 for row in vr_rows.all() if row.passed is True)
 
     validation_pass_rate = (
         round(patches_passed / patches_generated, 3) if patches_generated > 0 else 0.0
@@ -303,6 +315,12 @@ async def list_reports(
     page = max(1, page)
     offset = (page - 1) * page_size
 
+    # Reports are immutable once generated — cache the list for 5 minutes.
+    cache_key = f"alm:report:list:p{page}:ps{page_size}"
+    cached = await cache_get(cache_key)
+    if cached:
+        return cached
+
     count_result = await db.execute(select(func.count()).select_from(Report))
     total_items = count_result.scalar_one()
     total_pages = ceil(total_items / page_size) if total_items > 0 else 1
@@ -338,7 +356,7 @@ async def list_reports(
             "estimated_hours": report.estimated_hours,
         })
 
-    return {
+    result = {
         "data": data,
         "pagination": {
             "page": page,
@@ -349,6 +367,8 @@ async def list_reports(
             "has_prev": page > 1,
         },
     }
+    await cache_set(cache_key, result, ttl=300)
+    return result
 
 
 @router.get("/{job_id}", response_model=dict)
@@ -363,10 +383,19 @@ async def get_report(
     If a cached report exists in the reports table, it is returned directly.
     Otherwise the report is computed on-the-fly from the current DB state
     and cached for future requests.
+
+    An additional Redis layer caches the final JSON for 5 minutes so that
+    repeated GETs don't even touch PostgreSQL.
     """
     job = await _get_job_or_404(job_id, db)
 
-    # Check for cached report.
+    # Redis fast path — avoids DB hit entirely for hot reports.
+    redis_key = f"alm:report:{job_id}"
+    redis_cached = await cache_get(redis_key)
+    if redis_cached:
+        return redis_cached
+
+    # Check for cached report in the reports table.
     cached_result = await db.execute(
         select(Report).where(Report.job_id == job_id)
     )
@@ -375,6 +404,7 @@ async def get_report(
     if cached_report and cached_report.report_json:
         report_data = dict(cached_report.report_json)
         report_data["report_id"] = str(cached_report.id)
+        await cache_set(redis_key, report_data, ttl=300)
         return report_data
 
     # Compute report on-the-fly.
@@ -404,6 +434,7 @@ async def get_report(
         await db.rollback()
 
     report_data["report_id"] = str(new_report.id)
+    await cache_set(redis_key, report_data, ttl=300)
     return report_data
 
 

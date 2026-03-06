@@ -18,6 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_api_key, get_db
+from app.core.cache import cache_get, cache_invalidate, cache_set
 from app.models.job import Job
 from app.models.plan import Plan, PlanTask
 from app.schemas.job import PaginationMeta
@@ -32,6 +33,11 @@ from app.schemas.plan import (
 )
 
 router = APIRouter()
+
+# TTL for completed-job plan data — plan content never changes after job completes.
+_PLAN_TTL = 300  # 5 minutes
+# TTL when plan tasks can still be updated (approve/reject/notes).
+_PLAN_ACTIVE_TTL = 30
 
 _VALID_STATUS_TRANSITIONS = {
     "pending": {"approved", "rejected"},
@@ -114,7 +120,12 @@ async def get_plan(
     _key: dict = Depends(get_current_api_key),
 ) -> PlanResponse:
     """Get the latest refactor plan for a job including all tasks."""
-    await _get_job_or_404(job_id, db)
+    job = await _get_job_or_404(job_id, db)
+
+    cache_key = f"alm:plan:{job_id}"
+    cached = await cache_get(cache_key)
+    if cached:
+        return PlanResponse(**cached)
 
     plan = await _get_latest_plan(job_id, db)
     if plan is None:
@@ -131,7 +142,7 @@ async def get_plan(
     tasks = tasks_result.scalars().all()
     automated_count = sum(1 for t in tasks if t.automated)
 
-    return PlanResponse(
+    response = PlanResponse(
         plan_id=plan.id,
         job_id=plan.job_id,
         status="draft",
@@ -143,6 +154,10 @@ async def get_plan(
         created_at=plan.created_at,
         tasks=[_task_to_summary(t) for t in tasks],
     )
+
+    ttl = _PLAN_TTL if job.status == "complete" else _PLAN_ACTIVE_TTL
+    await cache_set(cache_key, response.model_dump(), ttl=ttl)
+    return response
 
 
 @router.get("/{job_id}/tasks", response_model=PlanTaskListResponse)
@@ -160,7 +175,15 @@ async def list_tasks(
     page = max(1, page)
     offset = (page - 1) * page_size
 
-    await _get_job_or_404(job_id, db)
+    job = await _get_job_or_404(job_id, db)
+
+    cache_key = (
+        f"alm:plan:tasks:{job_id}:p{page}:ps{page_size}"
+        f":s{task_status or ''}:a{int(automated) if automated is not None else ''}"
+    )
+    cached = await cache_get(cache_key)
+    if cached:
+        return PlanTaskListResponse(**cached)
 
     plan = await _get_latest_plan(job_id, db)
     if plan is None:
@@ -190,7 +213,7 @@ async def list_tasks(
     )
     tasks = tasks_result.scalars().all()
 
-    return PlanTaskListResponse(
+    response = PlanTaskListResponse(
         data=[_task_to_response(t) for t in tasks],
         pagination=PaginationMeta(
             page=page,
@@ -201,6 +224,10 @@ async def list_tasks(
             has_prev=page > 1,
         ),
     )
+
+    ttl = _PLAN_TTL if job.status == "complete" else _PLAN_ACTIVE_TTL
+    await cache_set(cache_key, response.model_dump(), ttl=ttl)
+    return response
 
 
 @router.get("/{job_id}/tasks/{task_id}", response_model=PlanTaskResponse)
@@ -270,6 +297,10 @@ async def update_task(
     task.updated_at = datetime.now(UTC)
     await db.flush()
 
+    # Invalidate plan caches since task status/notes changed.
+    await cache_invalidate(f"alm:plan:{job_id}")
+    await cache_invalidate(f"alm:plan:tasks:{job_id}:*")
+
     return _task_to_response(task)
 
 
@@ -318,6 +349,10 @@ async def regenerate_plan(
     )
     db.add(new_plan)
     await db.flush()
+
+    # Invalidate plan caches since a new version was created.
+    await cache_invalidate(f"alm:plan:{job_id}")
+    await cache_invalidate(f"alm:plan:tasks:{job_id}:*")
 
     return RegeneratePlanResponse(
         message="Plan regeneration queued",

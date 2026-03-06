@@ -20,6 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_api_key, get_db
+from app.core.cache import cache_get, cache_invalidate, cache_set
 from app.models.job import Job
 from app.models.patch import Patch, ValidationResult
 from app.schemas.job import PaginationMeta
@@ -34,6 +35,11 @@ from app.schemas.patch import (
 )
 
 router = APIRouter()
+
+# TTL for completed-job patch data — immutable once job completes.
+_PATCH_TTL = 300  # 5 minutes
+# TTL when patches can still change status (apply/revert by users).
+_PATCH_ACTIVE_TTL = 30
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +81,46 @@ async def _get_validation_passed(patch_id: UUID, db: AsyncSession) -> bool | Non
     )
     row = result.scalar_one_or_none()
     return row
+
+
+async def _batch_get_validation_passed(patch_ids: list[UUID], db: AsyncSession) -> dict[UUID, bool | None]:
+    """
+    Fetch the latest validation result for each patch ID in a single query.
+
+    Returns a dict mapping patch_id -> passed (bool) or None if not validated.
+    This avoids the N+1 pattern in list_patches.
+    """
+    if not patch_ids:
+        return {}
+
+    # Fetch the most recent ValidationResult.passed per patch_id using a
+    # DISTINCT ON (patch_id) ordered by created_at DESC.
+    # SQLAlchemy 2.0 doesn't expose DISTINCT ON directly, so we use a
+    # correlated subquery approach: select all, then pick max(created_at) per patch.
+    from sqlalchemy import and_  # noqa: PLC0415
+
+    # Subquery: latest created_at per patch_id.
+    latest_subq = (
+        select(
+            ValidationResult.patch_id,
+            func.max(ValidationResult.created_at).label("max_created_at"),
+        )
+        .where(ValidationResult.patch_id.in_(patch_ids))
+        .group_by(ValidationResult.patch_id)
+        .subquery()
+    )
+
+    rows_result = await db.execute(
+        select(ValidationResult.patch_id, ValidationResult.passed)
+        .join(
+            latest_subq,
+            and_(
+                ValidationResult.patch_id == latest_subq.c.patch_id,
+                ValidationResult.created_at == latest_subq.c.max_created_at,
+            ),
+        )
+    )
+    return {row.patch_id: row.passed for row in rows_result.all()}
 
 
 def _patch_to_summary(patch: Patch, validation_passed: bool | None) -> PatchSummaryResponse:
@@ -178,7 +224,15 @@ async def list_patches(
     page = max(1, page)
     offset = (page - 1) * page_size
 
-    await _get_job_or_404(job_id, db)
+    job = await _get_job_or_404(job_id, db)
+
+    cache_key = (
+        f"alm:patches:list:{job_id}:p{page}:ps{page_size}"
+        f":s{patch_status or ''}:l{language or ''}:t{task_id or ''}"
+    )
+    cached = await cache_get(cache_key)
+    if cached:
+        return PatchListResponse(**cached)
 
     query = select(Patch).where(Patch.job_id == job_id)
     count_query = select(func.count()).select_from(Patch).where(Patch.job_id == job_id)
@@ -201,12 +255,16 @@ async def list_patches(
     )
     patches = patches_result.scalars().all()
 
-    summaries = []
-    for patch in patches:
-        vp = await _get_validation_passed(patch.id, db)
-        summaries.append(_patch_to_summary(patch, vp))
+    # Batch-load validation results for all patches on this page (no N+1).
+    patch_ids = [p.id for p in patches]
+    validation_map = await _batch_get_validation_passed(patch_ids, db)
 
-    return PatchListResponse(
+    summaries = [
+        _patch_to_summary(patch, validation_map.get(patch.id))
+        for patch in patches
+    ]
+
+    response = PatchListResponse(
         data=summaries,
         pagination=PaginationMeta(
             page=page,
@@ -217,6 +275,11 @@ async def list_patches(
             has_prev=page > 1,
         ),
     )
+
+    # Cache for completed jobs; shorter TTL for active jobs where apply/revert can occur.
+    ttl = _PATCH_TTL if job.status == "complete" else _PATCH_ACTIVE_TTL
+    await cache_set(cache_key, response.model_dump(), ttl=ttl)
+    return response
 
 
 @router.get("/{job_id}/{patch_id}", response_model=PatchDetailResponse)
@@ -261,6 +324,9 @@ async def apply_patch(
     patch.updated_at = now
     await db.flush()
 
+    # Invalidate patch list caches for this job since status changed.
+    await cache_invalidate(f"alm:patches:list:{job_id}:*")
+
     return ApplyPatchResponse(
         patch_id=patch.id,
         status="applied",
@@ -296,6 +362,9 @@ async def revert_patch(
     patch.reverted_reason = body.reason
     patch.updated_at = now
     await db.flush()
+
+    # Invalidate patch list caches for this job since status changed.
+    await cache_invalidate(f"alm:patches:list:{job_id}:*")
 
     return RevertPatchResponse(
         patch_id=patch.id,

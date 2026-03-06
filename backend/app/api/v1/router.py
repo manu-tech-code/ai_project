@@ -6,7 +6,7 @@ Mounted at /api/v1 in app/main.py.
 
 from fastapi import APIRouter
 
-from app.api.v1 import admin, analyze, graph, patches, plan, report, smells, validate
+from app.api.v1 import admin, analyze, graph, patches, plan, report, settings, smells, validate
 
 router = APIRouter()
 
@@ -33,3 +33,6 @@ router.include_router(report.router, prefix="/report", tags=["report"])
 
 # Admin: health, metrics, API key management.
 router.include_router(admin.router, prefix="/admin", tags=["admin"])
+
+# Runtime settings (LLM provider/model).
+router.include_router(settings.router, prefix="/settings", tags=["settings"])

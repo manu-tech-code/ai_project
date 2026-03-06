@@ -38,8 +38,21 @@ export const analyzeApi = {
   listJobs: (params?: { page?: number; status?: string; page_size?: number }) =>
     client.get<PaginatedResponse<JobSummary>>('/analyze', { params }),
 
+  stopJob: (jobId: string) =>
+    client.post(`/analyze/${jobId}/stop`),
+
   deleteJob: (jobId: string) =>
     client.delete(`/analyze/${jobId}`),
+}
+
+// --- Settings ---
+
+export const settingsApi = {
+  getLLM: () =>
+    client.get<{ provider: string; model: string; embed_model: string; base_url: string | null; available_models: string[] }>('/settings/llm'),
+
+  patchLLM: (body: { model?: string; provider?: string }) =>
+    client.patch<{ provider: string; model: string; embed_model: string; base_url: string | null; available_models: string[] }>('/settings/llm', body),
 }
 
 // --- Graph ---

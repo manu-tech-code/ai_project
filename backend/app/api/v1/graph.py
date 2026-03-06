@@ -371,47 +371,80 @@ async def get_metrics(
 
     average_coupling = round(total_edges / total_nodes, 2) if total_nodes > 0 else 0.0
 
-    # Top coupled nodes: nodes with highest (in + out) edge count.
-    class_nodes_result = await db.execute(
-        select(UCGNode)
+    # Top coupled nodes: compute in/out coupling counts in a single aggregated query
+    # to avoid the N+1 pattern of issuing 2 queries per CLASS/MODULE node.
+    #
+    # Strategy: fetch all CLASS/MODULE node IDs for this job, then run a single
+    # GROUP BY aggregate over UCGEdge that counts inbound and outbound edges per node.
+    class_node_ids_result = await db.execute(
+        select(UCGNode.id, UCGNode.qualified_name)
         .where(UCGNode.job_id == job_id, UCGNode.node_type.in_(["CLASS", "MODULE"]))
         .limit(200)
     )
-    class_nodes = class_nodes_result.scalars().all()
+    class_node_rows = class_node_ids_result.all()  # list of (id, qualified_name)
+    class_node_ids = [row[0] for row in class_node_rows]
+    class_node_names = {row[0]: row[1] for row in class_node_rows}
 
     top_coupled: list[TopCoupledNode] = []
-    for n in class_nodes[:50]:  # limit to avoid N+1 queries on large graphs
-        in_count = (
-            await db.execute(
-                select(func.count()).select_from(UCGEdge).where(
-                    UCGEdge.job_id == job_id,
-                    UCGEdge.target_node_id == n.id,
-                    UCGEdge.edge_type.in_(["CALLS", "DEPENDS_ON"]),
-                )
+    if class_node_ids:
+        # Single query: count inbound edges per target_node_id + outbound per source_node_id.
+        # We union both directions then sum by node_id.
+        coupling_edges = ["CALLS", "DEPENDS_ON"]
+
+        in_subq = (
+            select(
+                UCGEdge.target_node_id.label("node_id"),
+                func.count().label("in_count"),
             )
-        ).scalar_one()
-        out_count = (
-            await db.execute(
-                select(func.count()).select_from(UCGEdge).where(
-                    UCGEdge.job_id == job_id,
-                    UCGEdge.source_node_id == n.id,
-                    UCGEdge.edge_type.in_(["CALLS", "DEPENDS_ON"]),
-                )
+            .where(
+                UCGEdge.job_id == job_id,
+                UCGEdge.target_node_id.in_(class_node_ids),
+                UCGEdge.edge_type.in_(coupling_edges),
             )
-        ).scalar_one()
-        total = in_count + out_count
-        if total == 0:
-            continue
-        instability = round(out_count / total, 3)
-        top_coupled.append(
-            TopCoupledNode(
-                node_id=n.id,
-                qualified_name=n.qualified_name,
-                afferent_coupling=in_count,
-                efferent_coupling=out_count,
-                instability=instability,
-            )
+            .group_by(UCGEdge.target_node_id)
+            .subquery()
         )
+
+        out_subq = (
+            select(
+                UCGEdge.source_node_id.label("node_id"),
+                func.count().label("out_count"),
+            )
+            .where(
+                UCGEdge.job_id == job_id,
+                UCGEdge.source_node_id.in_(class_node_ids),
+                UCGEdge.edge_type.in_(coupling_edges),
+            )
+            .group_by(UCGEdge.source_node_id)
+            .subquery()
+        )
+
+        # Full outer join on node_id to get both in and out counts in one row set.
+        # SQLAlchemy doesn't support FULL OUTER JOIN portably, so we use two LEFT JOINs
+        # anchored to the list of class node IDs via a VALUES-style subquery approach.
+        # Simpler: just fetch both subqueries and merge in Python (still 2 queries, not 2*N).
+        in_rows_result = await db.execute(select(in_subq))
+        out_rows_result = await db.execute(select(out_subq))
+
+        in_map: dict = {row.node_id: row.in_count for row in in_rows_result.all()}
+        out_map: dict = {row.node_id: row.out_count for row in out_rows_result.all()}
+
+        for node_id in class_node_ids:
+            in_count = in_map.get(node_id, 0)
+            out_count = out_map.get(node_id, 0)
+            total = in_count + out_count
+            if total == 0:
+                continue
+            instability = round(out_count / total, 3)
+            top_coupled.append(
+                TopCoupledNode(
+                    node_id=node_id,
+                    qualified_name=class_node_names[node_id],
+                    afferent_coupling=in_count,
+                    efferent_coupling=out_count,
+                    instability=instability,
+                )
+            )
 
     top_coupled.sort(key=lambda x: x.afferent_coupling + x.efferent_coupling, reverse=True)
     top_coupled = top_coupled[:10]

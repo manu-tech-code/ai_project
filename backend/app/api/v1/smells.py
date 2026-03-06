@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_api_key, get_db
+from app.core.cache import cache_get, cache_invalidate, cache_set
 from app.models.job import Job
 from app.models.smell import Smell
 from app.models.ucg import UCGNode
@@ -30,6 +31,11 @@ from app.schemas.smell import (
 )
 
 router = APIRouter()
+
+# TTL for completed-job smell data — never changes after job completes.
+_SMELL_TTL = 300  # 5 minutes
+# TTL for in-progress or mutable smell data (active dismissals possible).
+_SMELL_ACTIVE_TTL = 30
 
 
 # ---------------------------------------------------------------------------
@@ -48,21 +54,30 @@ async def _get_job_or_404(job_id: UUID, db: AsyncSession) -> Job:
     return job
 
 
-async def _build_smell_response(smell: Smell, db: AsyncSession) -> SmellResponse:
-    """Populate SmellResponse including affected UCGNode details."""
+async def _batch_load_nodes(node_ids: list, db: AsyncSession) -> dict:
+    """Load UCGNode rows for a list of IDs in a single query. Returns id -> node map."""
+    if not node_ids:
+        return {}
+    nodes_result = await db.execute(
+        select(UCGNode).where(UCGNode.id.in_(node_ids))
+    )
+    return {n.id: n for n in nodes_result.scalars().all()}
+
+
+def _build_smell_response_from_nodes(smell: Smell, nodes_by_id: dict) -> SmellResponse:
+    """Build SmellResponse using a pre-fetched node map (avoids per-smell DB calls)."""
     affected_nodes: list[SmellAffectedNode] = []
     if smell.affected_node_ids:
-        nodes_result = await db.execute(
-            select(UCGNode).where(UCGNode.id.in_(smell.affected_node_ids))
-        )
-        for node in nodes_result.scalars().all():
-            affected_nodes.append(
-                SmellAffectedNode(
-                    node_id=node.id,
-                    node_type=node.node_type,
-                    qualified_name=node.qualified_name,
+        for node_id in smell.affected_node_ids:
+            node = nodes_by_id.get(node_id)
+            if node is not None:
+                affected_nodes.append(
+                    SmellAffectedNode(
+                        node_id=node.id,
+                        node_type=node.node_type,
+                        qualified_name=node.qualified_name,
+                    )
                 )
-            )
     return SmellResponse(
         smell_id=smell.id,
         job_id=smell.job_id,
@@ -81,6 +96,13 @@ async def _build_smell_response(smell: Smell, db: AsyncSession) -> SmellResponse
     )
 
 
+async def _build_smell_response(smell: Smell, db: AsyncSession) -> SmellResponse:
+    """Populate SmellResponse including affected UCGNode details (single-item path)."""
+    node_ids = list(smell.affected_node_ids) if smell.affected_node_ids else []
+    nodes_by_id = await _batch_load_nodes(node_ids, db)
+    return _build_smell_response_from_nodes(smell, nodes_by_id)
+
+
 # ---------------------------------------------------------------------------
 # Route handlers
 # ---------------------------------------------------------------------------
@@ -94,7 +116,14 @@ async def get_smell_summary(
     _key: dict = Depends(get_current_api_key),
 ) -> SmellSummaryResponse:
     """Get aggregated smell statistics by type and severity for a job."""
-    await _get_job_or_404(job_id, db)
+    job = await _get_job_or_404(job_id, db)
+
+    # Cache summary for completed jobs (no new smells after completion).
+    # Use a shorter TTL for non-complete jobs (dismissed count may change).
+    cache_key = f"alm:smells:summary:{job_id}"
+    cached = await cache_get(cache_key)
+    if cached:
+        return SmellSummaryResponse(**cached)
 
     smells_result = await db.execute(
         select(Smell).where(Smell.job_id == job_id)
@@ -122,7 +151,7 @@ async def get_smell_summary(
             if smell.evidence and "file_path" in smell.evidence:
                 affected_files.add(smell.evidence["file_path"])
 
-    # Also gather file paths from affected nodes.
+    # Also gather file paths from affected nodes — single batched query.
     if all_smells:
         all_node_ids = [
             node_id
@@ -141,7 +170,7 @@ async def get_smell_summary(
                 if fp:
                     affected_files.add(fp)
 
-    return SmellSummaryResponse(
+    response = SmellSummaryResponse(
         job_id=job_id,
         total_smells=total_smells,
         dismissed_smells=dismissed_smells,
@@ -151,6 +180,10 @@ async def get_smell_summary(
         affected_files=len(affected_files),
         estimated_tech_debt_hours=round(estimated_hours, 1),
     )
+
+    ttl = _SMELL_TTL if job.status == "complete" else _SMELL_ACTIVE_TTL
+    await cache_set(cache_key, response.model_dump(), ttl=ttl)
+    return response
 
 
 @router.get("/{job_id}", response_model=SmellListResponse)
@@ -169,7 +202,13 @@ async def list_smells(
     page = max(1, page)
     offset = (page - 1) * page_size
 
-    await _get_job_or_404(job_id, db)
+    job = await _get_job_or_404(job_id, db)
+
+    # Cache key encodes all filter params.
+    cache_key = f"alm:smells:list:{job_id}:p{page}:ps{page_size}:sev{severity or ''}:t{smell_type or ''}:d{int(dismissed)}"
+    cached = await cache_get(cache_key)
+    if cached:
+        return SmellListResponse(**cached)
 
     query = select(Smell).where(Smell.job_id == job_id)
     count_query = select(func.count()).select_from(Smell).where(Smell.job_id == job_id)
@@ -192,11 +231,21 @@ async def list_smells(
     )
     smells = smells_result.scalars().all()
 
-    smell_responses = []
-    for smell in smells:
-        smell_responses.append(await _build_smell_response(smell, db))
+    # Batch-load all affected UCGNodes for this page in a single query (no N+1).
+    all_node_ids = [
+        node_id
+        for smell in smells
+        if smell.affected_node_ids
+        for node_id in smell.affected_node_ids
+    ]
+    nodes_by_id = await _batch_load_nodes(all_node_ids, db)
 
-    return SmellListResponse(
+    smell_responses = [
+        _build_smell_response_from_nodes(smell, nodes_by_id)
+        for smell in smells
+    ]
+
+    response = SmellListResponse(
         data=smell_responses,
         pagination=PaginationMeta(
             page=page,
@@ -207,6 +256,10 @@ async def list_smells(
             has_prev=page > 1,
         ),
     )
+
+    ttl = _SMELL_TTL if job.status == "complete" else _SMELL_ACTIVE_TTL
+    await cache_set(cache_key, response.model_dump(), ttl=ttl)
+    return response
 
 
 @router.get("/{job_id}/{smell_id}", response_model=SmellResponse)
@@ -258,6 +311,10 @@ async def dismiss_smell(
     smell.dismissed_by = body.dismissed_by
     smell.dismissed_reason = body.reason
     await db.flush()
+
+    # Invalidate all smell caches for this job since dismissal changes summary + lists.
+    await cache_invalidate(f"alm:smells:*:{job_id}:*")
+    await cache_invalidate(f"alm:smells:summary:{job_id}")
 
     return SmellDismissResponse(
         smell_id=smell.id,

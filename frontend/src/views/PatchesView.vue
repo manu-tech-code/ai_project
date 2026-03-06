@@ -289,6 +289,10 @@ import { patchesApi } from '@/api/endpoints'
 import { useUIStore } from '@/stores/ui'
 import type { PatchDetail, PatchStatus, PatchSummary, PatchType } from '@/types'
 
+// Module-level per-jobId cache — survives route navigation without re-fetching.
+const _patchesCache = new Map<string, PatchSummary[]>()
+const _patchesInFlight = new Map<string, Promise<void>>()
+
 const route  = useRoute()
 const uiStore = useUIStore()
 const jobId = route.params.jobId as string
@@ -393,6 +397,7 @@ async function applyPatch(patchId: string): Promise<void> {
     const idx = patches.value.findIndex((p) => p.patch_id === patchId)
     if (idx !== -1) patches.value[idx] = { ...patches.value[idx], status: 'applied' }
     if (diffModal.patch?.patch_id === patchId) diffModal.patch = { ...diffModal.patch, status: 'applied' }
+    _patchesCache.delete(jobId)
     uiStore.notify({ type: 'success', title: 'Patch marked as applied', duration: 3000 })
   } catch (err) {
     uiStore.notify({ type: 'error', title: 'Failed to apply patch', message: String(err), duration: 5000 })
@@ -419,6 +424,7 @@ async function confirmRevert(): Promise<void> {
     await patchesApi.revertPatch(jobId, revertModal.patchId, { reason: revertModal.reason })
     const idx = patches.value.findIndex((p) => p.patch_id === revertModal.patchId)
     if (idx !== -1) patches.value[idx] = { ...patches.value[idx], status: 'reverted' }
+    _patchesCache.delete(jobId)
     uiStore.notify({ type: 'success', title: 'Patch reverted', duration: 3000 })
     revertModal.open = false
   } catch (err) {
@@ -441,18 +447,34 @@ async function exportZip(): Promise<void> {
   }
 }
 
-async function reload(): Promise<void> {
+async function reload(force = false): Promise<void> {
+  if (!force && _patchesCache.has(jobId)) {
+    patches.value = _patchesCache.get(jobId)!
+    return
+  }
+  const inflight = _patchesInFlight.get(jobId)
+  if (inflight) {
+    await inflight
+    patches.value = _patchesCache.get(jobId) ?? []
+    return
+  }
   isLoading.value = true
   loadError.value = null
-  try {
-    const { data } = await patchesApi.listPatches(jobId, { page_size: 200 } as any)
-    patches.value = data.data
-  } catch (err) {
-    loadError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    isLoading.value = false
-  }
+  const promise = patchesApi.listPatches(jobId, { page_size: 200 } as any)
+    .then(({ data }) => {
+      patches.value = data.data
+      _patchesCache.set(jobId, data.data)
+    })
+    .catch((err) => {
+      loadError.value = err instanceof Error ? err.message : String(err)
+    })
+    .finally(() => {
+      isLoading.value = false
+      _patchesInFlight.delete(jobId)
+    })
+  _patchesInFlight.set(jobId, promise)
+  await promise
 }
 
-onMounted(reload)
+onMounted(() => reload())
 </script>

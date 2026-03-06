@@ -61,13 +61,18 @@ async def cache_set(key: str, value: Any, ttl: int = 300) -> None:
 
 
 async def cache_invalidate(pattern: str) -> None:
-    """Delete all keys matching a glob pattern."""
+    """Delete all keys matching a glob pattern.
+
+    Uses SCAN instead of KEYS to avoid blocking Redis on large keyspaces.
+    """
     r = await _get_redis()
     if r is None:
         return
     try:
-        keys = await r.keys(pattern)
-        if keys:
-            await r.delete(*keys)
+        keys_to_delete: list[str] = []
+        async for key in r.scan_iter(match=pattern, count=100):
+            keys_to_delete.append(key)
+        if keys_to_delete:
+            await r.delete(*keys_to_delete)
     except Exception as exc:
         logger.debug("Cache invalidate failed for %s: %s", pattern, exc)

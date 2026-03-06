@@ -16,7 +16,7 @@
         </p>
       </div>
       <button
-        @click="reload"
+        @click="forceReload"
         class="flex items-center gap-2 text-xs px-3 py-2 rounded-md border transition-colors"
         :style="{
           background: 'var(--color-elevated)',
@@ -150,7 +150,7 @@
     <!-- Error -->
     <div v-else-if="loadError" class="text-center py-10">
       <p class="text-sm" style="color: var(--color-error)">{{ loadError }}</p>
-      <button @click="reload" class="mt-2 text-xs underline" style="color: var(--color-primary)">Retry</button>
+      <button @click="forceReload" class="mt-2 text-xs underline" style="color: var(--color-primary)">Retry</button>
     </div>
 
     <!-- Empty -->
@@ -201,6 +201,17 @@ const route  = useRoute()
 const router = useRouter()
 const uiStore = useUIStore()
 const jobId = route.params.jobId as string
+
+/**
+ * Module-level per-jobId cache so navigating away and back doesn't re-fetch
+ * data that hasn't changed. Keyed by jobId. Cleared when a new job is submitted
+ * (the analysis store calls bustCache on its invalidate()).
+ */
+interface SmellsCache { smells: SmellDetail[]; summary: SmellSummary }
+const _smellsCache = new Map<string, SmellsCache>()
+
+/** In-flight deduplication: if a fetch is already running for this jobId, don't start another. */
+let _inFlightFetch: Promise<void> | null = null
 
 const smells       = ref<SmellDetail[]>([])
 const summary      = ref<SmellSummary | null>(null)
@@ -277,21 +288,43 @@ function formatSmellType(type: string): string {
   return type.split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
 }
 
-async function reload(): Promise<void> {
+async function reload(force = false): Promise<void> {
+  // Serve from module-level cache if we already have data for this jobId and
+  // the caller didn't explicitly force a refresh.
+  if (!force && _smellsCache.has(jobId)) {
+    const cached = _smellsCache.get(jobId)!
+    smells.value = cached.smells
+    summary.value = cached.summary
+    return
+  }
+
+  // Deduplicate simultaneous fetches (e.g. from HMR double-mount in dev).
+  if (_inFlightFetch) {
+    await _inFlightFetch
+    return
+  }
+
   isLoading.value = true
   loadError.value = null
-  try {
-    const [smellsRes, summaryRes] = await Promise.all([
-      smellsApi.listSmells(jobId, { page_size: 200 } as any),
-      smellsApi.getSummary(jobId),
-    ])
-    smells.value = smellsRes.data.data
-    summary.value = summaryRes.data
-  } catch (err) {
-    loadError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    isLoading.value = false
-  }
+
+  _inFlightFetch = (async () => {
+    try {
+      const [smellsRes, summaryRes] = await Promise.all([
+        smellsApi.listSmells(jobId, { page_size: 200 } as any),
+        smellsApi.getSummary(jobId),
+      ])
+      smells.value = smellsRes.data.data
+      summary.value = summaryRes.data
+      _smellsCache.set(jobId, { smells: smells.value, summary: summary.value })
+    } catch (err) {
+      loadError.value = err instanceof Error ? err.message : String(err)
+    } finally {
+      isLoading.value = false
+      _inFlightFetch = null
+    }
+  })()
+
+  await _inFlightFetch
 }
 
 async function onDismiss(smellId: string, reason: string): Promise<void> {
@@ -321,5 +354,13 @@ function onNodeClick(nodeId: string): void {
   router.push({ name: 'graph', params: { jobId }, query: { node: nodeId } })
 }
 
-onMounted(reload)
+// The Refresh button in the template calls `reload` without arguments, which
+// maps to force=false. We need the button to bust the cache, so we expose a
+// separate forced reload for the template.
+async function forceReload(): Promise<void> {
+  _smellsCache.delete(jobId)
+  await reload(true)
+}
+
+onMounted(() => reload())
 </script>

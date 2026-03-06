@@ -407,6 +407,43 @@ async def list_jobs(
     return response
 
 
+@router.post("/{job_id}/stop", status_code=status.HTTP_204_NO_CONTENT)
+async def stop_job(
+    job_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _key: dict = Depends(get_current_api_key),
+) -> None:
+    """
+    Force-stop a running or pending job by marking it cancelled.
+
+    The pipeline checks for cancellation at each stage boundary and will
+    stop at the next opportunity. Returns 204 No Content on success.
+    """
+    result = await db.execute(select(Job).where(Job.id == job_id))
+    job = result.scalar_one_or_none()
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "job_not_found", "message": f"No job found with ID {job_id}"},
+        )
+
+    _stoppable = {"pending", "detecting", "mapping", "analyzing", "planning", "transforming", "validating"}
+    if job.status not in _stoppable:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "job_not_stoppable",
+                "message": f"Job {job_id} has status '{job.status}' and cannot be stopped.",
+            },
+        )
+
+    job.status = "cancelled"
+    job.updated_at = datetime.now(UTC)
+    await db.commit()
+    await cache_invalidate("alm:jobs:*")
+    logger.info("Job force-stopped", extra={"job_id": str(job_id)})
+
+
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_job(
     job_id: UUID,
@@ -414,10 +451,11 @@ async def delete_job(
     _key: dict = Depends(get_current_api_key),
 ) -> None:
     """
-    Cancel a pending job or delete a completed one.
+    Delete a job and all its associated data.
 
-    Running jobs (status=detecting/mapping/analyzing/planning/transforming/validating)
-    cannot be deleted. Returns 204 No Content on success.
+    Works for any status. Running jobs are marked cancelled first so the
+    pipeline stops at the next stage boundary, then the record is deleted.
+    Returns 204 No Content on success.
     """
     result = await db.execute(select(Job).where(Job.id == job_id))
     job = result.scalar_one_or_none()
@@ -429,21 +467,21 @@ async def delete_job(
 
     _running_statuses = {"detecting", "mapping", "analyzing", "planning", "transforming", "validating"}
     if job.status in _running_statuses:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "error": "job_running",
-                "message": f"Job {job_id} is currently running (status={job.status}) and cannot be deleted.",
-            },
-        )
-
-    if job.status == "pending":
+        # Signal the pipeline to stop at the next stage boundary.
         job.status = "cancelled"
         job.updated_at = datetime.now(UTC)
         await db.flush()
-        logger.info("Job cancelled", extra={"job_id": str(job_id)})
-    else:
-        # Completed, failed, cancelled — delete the record (cascades to all related rows).
-        await db.delete(job)
-        await db.flush()
-        logger.info("Job deleted", extra={"job_id": str(job_id)})
+
+    await db.delete(job)
+    await db.flush()
+
+    # Invalidate the job list AND all per-job caches so stale data isn't served.
+    await cache_invalidate("alm:jobs:*")
+    await cache_invalidate(f"alm:graph:{job_id}:*")
+    await cache_invalidate(f"alm:metrics:{job_id}")
+    await cache_invalidate(f"alm:smells:*:{job_id}:*")
+    await cache_invalidate(f"alm:smells:summary:{job_id}")
+    await cache_invalidate(f"alm:plan:{job_id}")
+    await cache_invalidate(f"alm:plan:tasks:{job_id}:*")
+    await cache_invalidate(f"alm:patches:list:{job_id}:*")
+    logger.info("Job deleted", extra={"job_id": str(job_id)})

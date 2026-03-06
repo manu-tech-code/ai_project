@@ -36,6 +36,9 @@ X-API-Key: alm_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 API keys are created via `POST /api/v1/admin/api-keys` (requires an existing `admin`-scoped key).
 
+For first-time setup or browser clients without a key, use the open bootstrap endpoint:
+`POST /api/v1/admin/api-keys/generate` (no auth required — creates a key with `read` + `write` scopes).
+
 ### Key Format
 
 ```
@@ -760,7 +763,7 @@ List all code patches generated for a job.
       "status": "pending",
       "validation_passed": true,
       "tokens_used": 4821,
-      "model_used": "claude-3-5-sonnet-20241022",
+      "model_used": "claude-opus-4-6",
       "created_at": "2026-03-04T12:03:30.000Z"
     }
   ],
@@ -789,7 +792,7 @@ Get a single patch with the full diff.
   "patched_content": "public class AuthService { ... }",
   "validation_passed": true,
   "tokens_used": 4821,
-  "model_used": "claude-3-5-sonnet-20241022",
+  "model_used": "claude-opus-4-6",
   "created_at": "2026-03-04T12:03:30.000Z",
   "applied_at": null,
   "reverted_at": null
@@ -1062,6 +1065,31 @@ List all completed reports.
 ---
 
 ## 10. Admin Endpoints
+
+### POST /admin/api-keys/generate
+
+Bootstrap endpoint to auto-generate an API key. **No authentication required.**
+
+Used by the frontend SPA on first load to obtain a working key when none is stored in `localStorage`.
+
+**Request Body:** None (empty body)
+
+**Response 200 OK:**
+
+```json
+{
+  "key": "alm_live_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+  "label": "auto-generated",
+  "scopes": ["read", "write"],
+  "created_at": "2026-03-05T10:00:00.000Z"
+}
+```
+
+The key is stored in browser `localStorage` under key `alm_api_key` and injected into all subsequent
+requests via the `X-API-Key` header. The frontend `AppHeader` also provides a manual "Generate Key"
+button as a fallback.
+
+---
 
 ### GET /health
 

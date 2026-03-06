@@ -271,9 +271,11 @@ import { useRouter } from 'vue-router'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseCard from '@/components/ui/BaseCard.vue'
 import { useAnalysisStore } from '@/stores/analysis'
+import { useUIStore } from '@/stores/ui'
 import type { Job, JobConfig } from '@/types'
 
 const store = useAnalysisStore()
+const ui = useUIStore()
 const router = useRouter()
 
 const fileInput  = ref<HTMLInputElement | null>(null)
@@ -350,8 +352,11 @@ async function submit(): Promise<void> {
       config.value,
     )
     store.startPolling(job.job_id)
+    ui.notify({ type: 'info', title: 'Analysis started', message: 'Monitoring pipeline progress…', duration: 4000 })
   } catch (err) {
-    submitError.value = err instanceof Error ? err.message : String(err)
+    const msg = err instanceof Error ? err.message : String(err)
+    submitError.value = msg
+    ui.notify({ type: 'error', title: 'Submission failed', message: msg, duration: 6000 })
   } finally {
     isSubmitting.value = false
   }
@@ -362,7 +367,10 @@ watch(
   () => store.activeJob?.status,
   (status) => {
     if (status === 'complete' && store.activeJobId) {
+      ui.notify({ type: 'success', title: 'Analysis complete', message: 'Navigating to results…', duration: 4000 })
       router.push({ name: 'graph', params: { jobId: store.activeJobId } })
+    } else if (status === 'failed') {
+      ui.notify({ type: 'error', title: 'Analysis failed', message: store.activeJob?.error ?? 'An error occurred during analysis.', duration: 0 })
     }
   },
 )

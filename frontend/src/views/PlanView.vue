@@ -150,6 +150,15 @@ const route = useRoute()
 const uiStore = useUIStore()
 const jobId = route.params.jobId as string
 
+/**
+ * Module-level per-jobId cache — navigating between views and back skips the
+ * network round-trip when we already have the plan for this job.
+ */
+const _planCache = new Map<string, Plan>()
+
+/** In-flight deduplication guard. */
+let _inFlightFetch: Promise<void> | null = null
+
 const plan       = ref<Plan | null>(null)
 const isLoading  = ref(false)
 const loadError  = ref<string | null>(null)
@@ -194,17 +203,36 @@ const filteredTasks = computed(() => {
   })
 })
 
-async function loadPlan(): Promise<void> {
+async function loadPlan(force = false): Promise<void> {
+  // Serve from cache when we already have the plan for this job.
+  if (!force && _planCache.has(jobId)) {
+    plan.value = _planCache.get(jobId)!
+    return
+  }
+
+  // Deduplicate simultaneous fetches.
+  if (_inFlightFetch) {
+    await _inFlightFetch
+    return
+  }
+
   isLoading.value = true
   loadError.value = null
-  try {
-    const { data } = await planApi.getPlan(jobId)
-    plan.value = data
-  } catch (err) {
-    loadError.value = err instanceof Error ? err.message : String(err)
-  } finally {
-    isLoading.value = false
-  }
+
+  _inFlightFetch = (async () => {
+    try {
+      const { data } = await planApi.getPlan(jobId)
+      plan.value = data
+      _planCache.set(jobId, data)
+    } catch (err) {
+      loadError.value = err instanceof Error ? err.message : String(err)
+    } finally {
+      isLoading.value = false
+      _inFlightFetch = null
+    }
+  })()
+
+  await _inFlightFetch
 }
 
 async function onApprove(taskId: string): Promise<void> {
@@ -238,6 +266,8 @@ async function regenerate(): Promise<void> {
   isRegenerating.value = true
   try {
     await planApi.regenerate(jobId)
+    // Bust cache so the next loadPlan call fetches fresh data.
+    _planCache.delete(jobId)
     uiStore.notify({ type: 'info', title: 'Plan regeneration queued', message: 'Refresh in a moment.', duration: 4000 })
   } catch (err) {
     uiStore.notify({ type: 'error', title: 'Regeneration failed', message: String(err), duration: 5000 })

@@ -73,6 +73,9 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis}@redis:6379/0
       JAVA_PARSER_URL: http://java-parser:8090
       ALM_JOBS_DIR: /alm_jobs
+      OLLAMA_BASE_URL: http://host.docker.internal:1234/v1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - alm_jobs_data:/alm_jobs
     depends_on:
