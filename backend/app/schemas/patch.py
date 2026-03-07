@@ -10,6 +10,25 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.job import PaginationMeta
 
 
+class GeneratePatchesRequest(BaseModel):
+    """Request body for POST /patches/{job_id}/generate."""
+
+    task_ids: list[UUID] | None = Field(
+        default=None,
+        description=(
+            "Subset of task IDs to generate patches for. "
+            "Omit to generate for all pending automated tasks."
+        ),
+    )
+
+
+class GeneratePatchesResponse(BaseModel):
+    """Response returned by POST /patches/{job_id}/generate."""
+
+    patches_created: int
+    patch_ids: list[str]
+
+
 class PatchSummaryResponse(BaseModel):
     """Abbreviated patch info for list responses (no diff content)."""
 

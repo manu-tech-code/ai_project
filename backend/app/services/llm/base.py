@@ -51,6 +51,7 @@ class LLMProvider(ABC):
         temperature: float = 0.2,
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
+        skip_retries: bool = False,
     ) -> CompletionResult:
         """
         Send a completion request to the LLM.
@@ -61,6 +62,9 @@ class LLMProvider(ABC):
             temperature: Sampling temperature (0.0–1.0).
             max_tokens: Maximum output tokens.
             tools: Optional tool definitions for structured output.
+            skip_retries: When True, attempt exactly once and raise immediately
+                on failure (used by health-check / test endpoints to avoid
+                hanging callers for multiple retry cycles).
 
         Returns:
             CompletionResult with content, token counts, and model used.
@@ -94,6 +98,7 @@ class StubProvider(LLMProvider):
         temperature: float = 0.2,
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
+        skip_retries: bool = False,
     ) -> CompletionResult:
         preview = user[:120].replace("\n", " ")
         return CompletionResult(
@@ -137,6 +142,8 @@ def get_llm_provider(settings) -> LLMProvider:
         provider = OllamaProvider()
         if "model" in _runtime_llm_override:
             provider._model = _runtime_llm_override["model"]
+        if "embed_model" in _runtime_llm_override:
+            provider._embed_model = _runtime_llm_override["embed_model"]
         return provider
     elif provider_pref == "anthropic" and anthropic_key:
         from app.services.llm.anthropic_provider import AnthropicProvider

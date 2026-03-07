@@ -8,13 +8,15 @@ POST /patches/{job_id}/{patch_id}/apply   — mark patch as applied
 POST /patches/{job_id}/{patch_id}/revert  — mark patch as reverted
 """
 
+import asyncio
 import io
 import zipfile
 from datetime import UTC, datetime
 from math import ceil
+from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +29,8 @@ from app.schemas.job import PaginationMeta
 from app.schemas.patch import (
     ApplyPatchRequest,
     ApplyPatchResponse,
+    GeneratePatchesRequest,
+    GeneratePatchesResponse,
     PatchDetailResponse,
     PatchListResponse,
     PatchSummaryResponse,
@@ -211,6 +215,75 @@ async def export_patches(
     )
 
 
+# NOTE: /{job_id}/generate must be registered BEFORE /{job_id} to avoid routing conflict.
+@router.post("/{job_id}/generate", response_model=GeneratePatchesResponse)
+async def generate_patches(
+    job_id: UUID,
+    body: GeneratePatchesRequest = Body(default_factory=GeneratePatchesRequest),
+    db: AsyncSession = Depends(get_db),
+    _key: dict = Depends(get_current_api_key),
+) -> GeneratePatchesResponse:
+    """Trigger on-demand patch generation for a completed job."""
+    from app.agents.transformer import TransformerAgent  # noqa: PLC0415
+    from app.agents.base import JobContext  # noqa: PLC0415
+    from app.services.llm.base import get_llm_provider  # noqa: PLC0415
+    from app.core.config import get_settings  # noqa: PLC0415
+
+    job = await db.get(Job, job_id)
+    if job is None:
+        raise HTTPException(404, detail={"error": "job_not_found"})
+    if job.status != "complete":
+        raise HTTPException(
+            409,
+            detail={
+                "error": "job_not_complete",
+                "message": "Job must be complete before generating patches.",
+            },
+        )
+    if not job.repo_path:
+        raise HTTPException(
+            409,
+            detail={
+                "error": "repo_path_missing",
+                "message": "No repo path stored for this job.",
+            },
+        )
+
+    repo = Path(job.repo_path)
+    if not repo.exists():
+        raise HTTPException(
+            409,
+            detail={
+                "error": "repo_path_not_found",
+                "message": "The extracted repository directory no longer exists on disk.",
+            },
+        )
+
+    settings = get_settings()
+    ctx = JobContext(
+        job_id=job.id,
+        repo_path=repo,
+        db_session=db,
+        job_config=job.config or {},
+        llm_provider=get_llm_provider(settings),
+    )
+    ctx.languages = job.languages or []
+
+    result = await TransformerAgent().run(ctx, task_ids=body.task_ids)
+
+    count_result = await db.execute(
+        select(func.count()).select_from(Patch).where(Patch.job_id == job_id)
+    )
+    job.patch_count = count_result.scalar_one()
+    job.updated_at = datetime.now(UTC)
+    await db.commit()
+
+    await cache_invalidate(f"alm:patches:list:{job_id}:*")
+    await cache_invalidate("alm:jobs:*")
+
+    return GeneratePatchesResponse(**result)
+
+
 @router.get("/{job_id}", response_model=PatchListResponse)
 async def list_patches(
     job_id: UUID,
@@ -389,8 +462,6 @@ async def push_patches(
     Clones the repo, writes patched_content for each selected patch,
     commits, pushes, and optionally creates a PR.
     """
-    import asyncio  # noqa: PLC0415
-
     # Fetch job.
     job_result = await db.execute(select(Job).where(Job.id == job_id))
     job = job_result.scalar_one_or_none()

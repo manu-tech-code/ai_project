@@ -61,6 +61,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
     repo_url: null,
     fix_branch: null,
     fix_pr_url: null,
+    deferred_stages: [],
     ...overrides,
   }
 }

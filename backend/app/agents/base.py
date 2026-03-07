@@ -129,8 +129,17 @@ class BaseAgent(ABC):
     async def emit_progress(
         self, context: JobContext, message: str, percent: int = 0
     ) -> None:
-        """Log agent progress. Can be extended to push to Redis pub/sub."""
+        """Log agent progress and persist to the job_logs table."""
         self.logger.info("[%s] %s (%d%%)", context.job_id, message, percent)
+        try:
+            from app.core.database import AsyncSessionLocal  # noqa: PLC0415
+            from app.models.job_log import insert_job_log  # noqa: PLC0415
+
+            async with AsyncSessionLocal() as log_session:
+                await insert_job_log(log_session, context.job_id, self.stage_name, message, percent)
+                await log_session.commit()
+        except Exception as exc:
+            self.logger.debug("emit_progress DB write failed: %s", exc)
 
 
 class AgentError(Exception):

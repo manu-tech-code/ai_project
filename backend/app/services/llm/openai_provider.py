@@ -52,6 +52,7 @@ class OpenAIProvider(LLMProvider):
         temperature: float = 0.2,
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
+        skip_retries: bool = False,
     ) -> CompletionResult:
         """Send a completion request to gpt-4o with retry."""
         effective_max_tokens = max_tokens or self._max_tokens

@@ -113,8 +113,8 @@ def test_job_stage_progress_future_stages_pending():
 
     progress = job.stage_progress()
     assert progress.get("planning") == "pending"
-    assert progress.get("transforming") == "pending"
     assert progress.get("validating") == "pending"
+    assert "transforming" not in progress  # transformer is now on-demand, not a pipeline stage
 
 
 def test_job_stage_progress_all_complete_for_finished_job():

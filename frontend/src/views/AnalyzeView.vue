@@ -219,6 +219,27 @@
           </button>
 
           <div v-if="showConfig" class="mt-3 space-y-3">
+            <!-- Model selection -->
+            <div v-if="llmSettings && llmSettings.available_models.length > 0">
+              <label class="block text-xs font-medium mb-1.5" style="color: var(--color-text-secondary)">
+                Model
+              </label>
+              <select
+                v-model="selectedModel"
+                class="w-full px-3 py-2 text-sm rounded-md border focus:outline-none"
+                :style="{
+                  background: 'var(--color-elevated)',
+                  borderColor: 'var(--color-border)',
+                  color: 'var(--color-text)',
+                }"
+              >
+                <option v-for="m in llmSettings.available_models" :key="m" :value="m">{{ m }}</option>
+              </select>
+              <p class="text-xs mt-1" style="color: var(--color-text-muted)">
+                Using provider: <span class="font-medium" style="color: var(--color-text)">{{ llmSettings.provider }}</span>
+              </p>
+            </div>
+
             <!-- Severity threshold -->
             <div>
               <label class="block text-xs font-medium mb-1.5" style="color: var(--color-text-secondary)">
@@ -292,64 +313,18 @@
       </div>
     </BaseCard>
 
-    <!-- Progress tracker (shown when job is running) -->
-    <BaseCard v-if="currentJob" class="mt-6" title="Analysis Progress">
-      <div class="space-y-3">
-        <div
-          v-for="stage in STAGES"
-          :key="stage.key"
-          class="flex items-center gap-3"
-        >
-          <!-- Stage indicator -->
-          <div
-            class="flex items-center justify-center w-6 h-6 rounded-full flex-shrink-0 text-xs font-bold"
-            :style="stageIndicatorStyle(stage.key)"
-          >
-            <span v-if="getStageStatus(stage.key) === 'complete'">✓</span>
-            <span v-else-if="getStageStatus(stage.key) === 'running'">
-              <svg class="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-                <path class="opacity-75" fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-            </span>
-            <span v-else-if="getStageStatus(stage.key) === 'failed'">✕</span>
-            <span v-else>{{ stage.order }}</span>
-          </div>
-
-          <!-- Stage info -->
-          <div class="flex-1">
-            <p
-              class="text-sm font-medium"
-              :style="{ color: getStageStatus(stage.key) === 'pending' ? 'var(--color-text-muted)' : 'var(--color-text)' }"
-            >
-              {{ stage.label }}
-            </p>
-          </div>
-
-          <!-- Stage status badge -->
-          <span
-            class="text-xs"
-            :style="{ color: stageTextColor(stage.key) }"
-          >
-            {{ getStageStatus(stage.key) ?? 'waiting' }}
-          </span>
-        </div>
-      </div>
-
-    </BaseCard>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { onMounted, ref } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseCard from '@/components/ui/BaseCard.vue'
-import { analyzeApi, vcsApi } from '@/api/endpoints'
+import { analyzeApi, settingsApi, vcsApi } from '@/api/endpoints'
 import { useAnalysisStore } from '@/stores/analysis'
 import { useUIStore } from '@/stores/ui'
-import type { Job, JobConfig, VCSProvider } from '@/types'
+import type { Job, JobConfig, LLMSettings, VCSProvider } from '@/types'
 
 const store = useAnalysisStore()
 const ui = useUIStore()
@@ -370,6 +345,10 @@ const repoToken = ref('')
 const repoProviderId = ref('')
 const vcsProviders = ref<VCSProvider[]>([])
 
+// LLM model selection
+const llmSettings = ref<LLMSettings | null>(null)
+const selectedModel = ref('')
+
 async function loadVCSProviders(): Promise<void> {
   try {
     const { data } = await vcsApi.listProviders()
@@ -379,45 +358,26 @@ async function loadVCSProviders(): Promise<void> {
   }
 }
 
-onMounted(loadVCSProviders)
+async function loadLLMSettings(): Promise<void> {
+  try {
+    const { data } = await settingsApi.getLLM()
+    llmSettings.value = data
+    selectedModel.value = data.model
+  } catch {
+    // silent — not critical
+  }
+}
+
+onMounted(() => {
+  void loadVCSProviders()
+  void loadLLMSettings()
+})
 
 const config = ref<Partial<JobConfig>>({
   smell_severity_threshold: 'medium',
   max_patches_per_task: 5,
   enable_extended_thinking: false,
 })
-
-const currentJob = computed<Job | null>(() => store.activeJob)
-
-const STAGES = [
-  { key: 'detecting',    label: 'Language Detection',  order: 1 },
-  { key: 'mapping',      label: 'UCG Construction',     order: 2 },
-  { key: 'analyzing',    label: 'Smell Detection',      order: 3 },
-  { key: 'planning',     label: 'Refactor Planning',    order: 4 },
-  { key: 'transforming', label: 'Patch Generation',     order: 5 },
-  { key: 'validating',   label: 'Validation',           order: 6 },
-]
-
-function getStageStatus(stageKey: string): string | null {
-  return currentJob.value?.stage_progress?.[stageKey] ?? null
-}
-
-function stageIndicatorStyle(stageKey: string): string {
-  const s = getStageStatus(stageKey)
-  const base = 'border '
-  if (s === 'complete')  return base + 'background: rgba(34,197,94,0.15); border-color: #22c55e; color: #86efac'
-  if (s === 'running')   return base + 'background: rgba(99,102,241,0.15); border-color: #6366f1; color: #a5b4fc'
-  if (s === 'failed')    return base + 'background: rgba(239,68,68,0.15); border-color: #ef4444; color: #fca5a5'
-  return base + 'background: var(--color-elevated); border-color: var(--color-border); color: var(--color-text-muted)'
-}
-
-function stageTextColor(stageKey: string): string {
-  const s = getStageStatus(stageKey)
-  if (s === 'complete')  return 'var(--color-success)'
-  if (s === 'running')   return 'var(--color-primary)'
-  if (s === 'failed')    return 'var(--color-error)'
-  return 'var(--color-text-muted)'
-}
 
 function onFileSelect(evt: Event): void {
   const input = evt.target as HTMLInputElement
@@ -446,22 +406,30 @@ async function submit(): Promise<void> {
         isSubmitting.value = false
         return
       }
+      const mergedConfig: Record<string, unknown> = {
+        ...(config.value as Record<string, unknown>),
+        ...(selectedModel.value ? { model: selectedModel.value } : {}),
+      }
       const { data } = await analyzeApi.fromUrl({
         repo_url: repoUrl.value.trim(),
         branch: repoBranch.value.trim() || null,
         provider_id: repoProviderId.value || null,
         token: repoToken.value.trim() || null,
         label: label.value || null,
-        config: config.value as Record<string, unknown>,
+        config: mergedConfig,
       })
       job = data
     } else {
       if (!selectedFile.value) return
-      job = await store.submitJob(selectedFile.value, label.value || undefined, config.value)
+      const archiveConfig: Partial<JobConfig> & { model?: string } = { ...config.value }
+      if (selectedModel.value) archiveConfig.model = selectedModel.value
+      job = await store.submitJob(selectedFile.value, label.value || undefined, archiveConfig)
     }
+    store.clearLogs()
     store.setActiveJob(job)
     store.startPolling(job.job_id)
-    ui.notify({ type: 'info', title: 'Analysis started', message: 'Monitoring pipeline progress...', duration: 4000 })
+    store.startLogPolling(job.job_id)
+    router.push({ name: 'job-progress', params: { jobId: job.job_id } })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     ui.notify({ type: 'error', title: 'Submission failed', message: msg, duration: 6000 })
@@ -469,17 +437,4 @@ async function submit(): Promise<void> {
     isSubmitting.value = false
   }
 }
-
-// Auto-navigate when analysis completes
-watch(
-  () => store.activeJob?.status,
-  (status) => {
-    if (status === 'complete' && store.activeJobId) {
-      ui.notify({ type: 'success', title: 'Analysis complete', message: 'Navigating to results…', duration: 4000 })
-      router.push({ name: 'graph', params: { jobId: store.activeJobId } })
-    } else if (status === 'failed') {
-      ui.notify({ type: 'error', title: 'Analysis failed', message: store.activeJob?.error ?? 'An error occurred during analysis.', duration: 0 })
-    }
-  },
-)
 </script>

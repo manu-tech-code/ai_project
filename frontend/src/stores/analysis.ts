@@ -9,7 +9,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { analyzeApi } from '@/api/endpoints'
-import type { Job, JobConfig, JobSummary, PaginationMeta } from '@/types'
+import type { Job, JobConfig, JobLogEntry, JobSummary, PaginationMeta } from '@/types'
 import { useGraphStore } from '@/stores/graph'
 
 export const useAnalysisStore = defineStore('analysis', () => {
@@ -21,6 +21,11 @@ export const useAnalysisStore = defineStore('analysis', () => {
   const isPolling = ref(false)
   const error = ref<string | null>(null)
   const pagination = ref<PaginationMeta | null>(null)
+
+  // Log polling state
+  const logs = ref<JobLogEntry[]>([])
+  const lastLogSeq = ref(0)
+  let logPollTimer: ReturnType<typeof setInterval> | null = null
 
   let pollTimer: ReturnType<typeof setInterval> | null = null
   const POLL_INTERVAL_MS = 3000
@@ -131,6 +136,51 @@ export const useAnalysisStore = defineStore('analysis', () => {
     isPolling.value = false
   }
 
+  async function fetchLogs(jobId: string): Promise<void> {
+    try {
+      const { data } = await analyzeApi.getLogs(jobId, lastLogSeq.value)
+      if (data.logs.length > 0) {
+        logs.value.push(...data.logs)
+        lastLogSeq.value = data.logs[data.logs.length - 1].seq
+      }
+    } catch {
+      // Polling errors are silent; will retry next interval
+    }
+  }
+
+  function startLogPolling(jobId: string): void {
+    stopLogPolling()
+    logPollTimer = setInterval(async () => {
+      await fetchLogs(jobId)
+      if (isJobComplete.value) stopLogPolling()
+    }, POLL_INTERVAL_MS)
+  }
+
+  function stopLogPolling(): void {
+    if (logPollTimer !== null) {
+      clearInterval(logPollTimer)
+      logPollTimer = null
+    }
+  }
+
+  async function fetchAllLogs(jobId: string): Promise<void> {
+    try {
+      const { data } = await analyzeApi.getLogs(jobId, 0, 1000)
+      logs.value = data.logs
+      if (data.logs.length > 0) {
+        lastLogSeq.value = data.logs[data.logs.length - 1].seq
+      }
+    } catch {
+      // silent
+    }
+  }
+
+  function clearLogs(): void {
+    logs.value = []
+    lastLogSeq.value = 0
+    stopLogPolling()
+  }
+
   async function cancelJob(jobId: string): Promise<void> {
     try {
       await analyzeApi.deleteJob(jobId)
@@ -176,6 +226,8 @@ export const useAnalysisStore = defineStore('analysis', () => {
     isPolling,
     error,
     pagination,
+    logs,
+    lastLogSeq,
     // Getters
     activeJobStatus,
     isJobComplete,
@@ -187,6 +239,11 @@ export const useAnalysisStore = defineStore('analysis', () => {
     fetchJobs,
     startPolling,
     stopPolling,
+    fetchLogs,
+    fetchAllLogs,
+    startLogPolling,
+    stopLogPolling,
+    clearLogs,
     cancelJob,
     stopJob,
     setActiveJob,

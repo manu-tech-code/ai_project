@@ -5,6 +5,7 @@
  *   /                          HomeView       — Dashboard, recent jobs
  *   /analyze                   AnalyzeView    — Upload form
  *   /settings                  SettingsView   — VCS providers and integrations
+ *   /jobs/:jobId/progress      JobProgressView — Live/completed job logs (guard-free)
  *   /jobs/:jobId/graph         GraphView      — UCG visualization
  *   /jobs/:jobId/smells        SmellsView     — Smell list
  *   /jobs/:jobId/plan          PlanView       — Refactor plan
@@ -47,6 +48,11 @@ const routes: RouteRecordRaw[] = [
             path: '',
             name: 'job-detail',
             redirect: (to) => ({ name: 'graph', params: to.params }),
+          },
+          {
+            path: 'progress',
+            name: 'job-progress',
+            component: () => import('@/views/JobProgressView.vue'),
           },
           {
             path: 'graph',
@@ -98,7 +104,9 @@ const router = createRouter({
 })
 
 // Redirect to home if navigating to a job route whose ID is not the active job.
+// Exception: /jobs/:jobId/progress is always allowed (used for completed job log review).
 router.beforeEach((to) => {
+  if (to.name === 'job-progress') return
   const jobId = to.params.jobId as string | undefined
   if (jobId) {
     const store = useAnalysisStore()

@@ -14,6 +14,7 @@ Output:
   - Returns list[SmellResult]
 """
 
+import asyncio
 import json
 import uuid
 from collections import defaultdict
@@ -137,11 +138,17 @@ class SmellDetectorAgent(BaseAgent):
             self._detect_anemic_domain_model(class_nodes, outgoing, node_by_id)
         )
 
-        await self.emit_progress(context, "Enriching smells with LLM", percent=65)
-
-        # Optional LLM confirmation/enrichment
-        if context.llm is not None:
+        # LLM enrichment is optional and off by default for speed.
+        # Enable via job config: {"llm_enrich_smells": true}
+        if context.llm is not None and context.job_config.get("llm_enrich_smells", False):
+            await self.emit_progress(context, "Enriching smells with LLM", percent=65)
             candidates = await self._enrich_with_llm(context, candidates, node_by_id)
+
+        for smell in candidates:
+            if smell.affected_node_ids:
+                node = node_by_id.get(smell.affected_node_ids[0])
+                if node and node.file_path:
+                    smell.evidence = {**smell.evidence, "file_path": node.file_path}
 
         await self.emit_progress(context, "Persisting smells to database", percent=80)
 
@@ -476,13 +483,11 @@ class SmellDetectorAgent(BaseAgent):
         node_by_id: dict[UUID, UCGNode],
     ) -> list[SmellResult]:
         """Use LLM to enrich high/critical severity smells with detailed rationale."""
-        enriched: list[SmellResult] = []
-
         # Only send high/critical smells to LLM to control costs
         high_priority = [s for s in candidates if s.severity in ("critical", "high")]
         low_priority = [s for s in candidates if s.severity not in ("critical", "high")]
 
-        for smell in high_priority:
+        async def _enrich_one(smell: SmellResult) -> SmellResult:
             try:
                 node_names = [
                     node_by_id[nid].qualified_name
@@ -511,8 +516,9 @@ class SmellDetectorAgent(BaseAgent):
                     "[%s] LLM enrichment failed for smell '%s': %s",
                     context.job_id, smell.smell_type, exc,
                 )
-            enriched.append(smell)
+            return smell
 
+        enriched = list(await asyncio.gather(*(_enrich_one(s) for s in high_priority)))
         enriched.extend(low_priority)
         return enriched
 

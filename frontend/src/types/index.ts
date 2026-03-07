@@ -126,12 +126,14 @@ export interface Job extends JobSummary {
   archive_size_bytes: number | null
   config: Partial<JobConfig>
   current_stage: string | null
-  stage_progress: Record<string, 'pending' | 'running' | 'complete' | 'failed'>
+  stage_progress: Record<string, 'pending' | 'running' | 'complete' | 'failed' | 'skipped'>
   error: string | null
   ucg_stats: { node_count: number; edge_count: number } | null
   repo_url: string | null
+  repo_path?: string | null
   fix_branch: string | null
   fix_pr_url: string | null
+  deferred_stages: string[]
 }
 
 // --- UCG ---
@@ -378,6 +380,32 @@ export interface CytoscapeEdgeData {
 export type CytoscapeElement =
   | { group: 'nodes'; data: CytoscapeNodeData }
   | { group: 'edges'; data: CytoscapeEdgeData }
+
+// --- Job Logs ---
+
+export interface JobLogEntry {
+  seq: number
+  stage: string
+  message: string
+  percent: number
+  created_at: string
+}
+
+export interface JobLogsResponse {
+  job_id: string
+  total: number
+  logs: JobLogEntry[]
+}
+
+// --- LLM Settings ---
+
+export interface LLMSettings {
+  provider: string
+  model: string
+  embed_model: string
+  base_url: string | null
+  available_models: string[]
+}
 
 // --- VCS ---
 

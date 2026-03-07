@@ -49,12 +49,14 @@ class OllamaProvider(LLMProvider):
         temperature: float = 0.2,
         max_tokens: int = 4096,
         tools: list[dict] | None = None,
+        skip_retries: bool = False,
     ) -> CompletionResult:
         """Send a completion request to the local Ollama instance."""
         effective_max_tokens = max_tokens or self._max_tokens
+        attempts = 1 if skip_retries else self.MAX_RETRIES
 
         last_exc: Exception | None = None
-        for attempt in range(self.MAX_RETRIES):
+        for attempt in range(attempts):
             try:
                 messages = [
                     {"role": "system", "content": system},
@@ -111,7 +113,7 @@ class OllamaProvider(LLMProvider):
                 )
 
         raise RuntimeError(
-            f"OllamaProvider.complete: failed after {self.MAX_RETRIES} attempts: {last_exc}"
+            f"OllamaProvider.complete: failed after {attempts} attempt(s): {last_exc}"
         )
 
     async def embed(self, texts: list[str]) -> EmbeddingResult:

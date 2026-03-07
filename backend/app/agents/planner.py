@@ -93,10 +93,10 @@ class PlannerAgent(BaseAgent):
             self.logger.warning("[%s] No tasks generated from smells.", job_id)
             return {"tasks_created": 0, "plan_id": None}
 
-        await self.emit_progress(context, "Enriching tasks with LLM", percent=40)
-
-        # Optionally enrich tasks with LLM
-        if context.llm is not None:
+        # LLM enrichment is optional and off by default for speed.
+        # Enable via job config: {"llm_enrich_tasks": true}
+        if context.llm is not None and context.job_config.get("llm_enrich_tasks", False):
+            await self.emit_progress(context, "Enriching tasks with LLM", percent=40)
             tasks = await self._enrich_tasks_with_llm(context, tasks, smells)
 
         # Compute dependency order (topological sort heuristic)

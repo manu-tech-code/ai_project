@@ -45,6 +45,9 @@ class Job(Base):
     archive_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     archive_checksum: Mapped[str | None] = mapped_column(Text)  # SHA-256
 
+    # Path to the extracted repo on disk — used for on-demand patch generation.
+    repo_path: Mapped[str | None] = mapped_column(Text)
+
     # VCS integration — set when job was created from a repo URL.
     repo_url: Mapped[str | None] = mapped_column(Text)
     repo_branch: Mapped[str | None] = mapped_column(Text)
@@ -121,18 +124,21 @@ class Job(Base):
         """
         Return a dict mapping each pipeline stage to its state.
 
-        States: 'complete' | 'running' | 'pending' | 'failed'
+        States: 'complete' | 'running' | 'pending' | 'failed' | 'skipped'
         """
-        stages = ["detecting", "mapping", "analyzing", "planning", "transforming", "validating"]
+        stages = ["detecting", "mapping", "analyzing", "planning", "validating"]
         stage_order = {s: i for i, s in enumerate(stages)}
 
         current = self.current_stage or ""
         current_idx = stage_order.get(current, -1)
+        deferred = set((self.config or {}).get("deferred_stages", []))
 
         progress: dict[str, str] = {}
         for stage in stages:
             idx = stage_order[stage]
-            if self.status == "failed" and stage == current:
+            if stage in deferred:
+                progress[stage] = "skipped"
+            elif self.status == "failed" and stage == current:
                 progress[stage] = "failed"
             elif idx < current_idx or self.status in ("complete",):
                 progress[stage] = "complete"

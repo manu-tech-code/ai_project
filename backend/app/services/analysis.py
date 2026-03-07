@@ -6,9 +6,10 @@ Coordinates the full agent pipeline for a single job:
   2. Mapper (UCG Builder) — parse source files and build the Universal Code Graph
   3. SmellDetector — detect architectural smells using rules + LLM
   4. Planner — generate a prioritized refactor plan via LLM
-  5. Transformer — generate code patches for automated tasks via LLM
-  6. Validator — sandbox-validate each generated patch
-  7. Learner — create and store vector embeddings for similarity search
+  5. Validator — sandbox-validate each generated patch
+  6. Learner — create and store vector embeddings for similarity search
+
+Patch generation (Transformer) is now on-demand via POST /patches/{job_id}/generate.
 
 Each agent stage updates the job status in the database. If any stage fails
 the job is marked FAILED with the error message and stage captured.
@@ -35,7 +36,6 @@ _STAGE_DETECTING = "detecting"
 _STAGE_MAPPING = "mapping"
 _STAGE_ANALYZING = "analyzing"
 _STAGE_PLANNING = "planning"
-_STAGE_TRANSFORMING = "transforming"
 _STAGE_VALIDATING = "validating"
 
 
@@ -92,22 +92,29 @@ class AnalysisService:
             await self._update_status(job, _STAGE_PLANNING, "planning", session)
             await self._run_planner(job, session)
 
-            # Stage 5: Patch generation.
-            await self._update_status(job, _STAGE_TRANSFORMING, "transforming", session)
-            await self._run_transformer(job, session)
-
-            # Stage 6: Patch validation.
+            # Stage 5: Patch validation.
             await self._update_status(job, _STAGE_VALIDATING, "validating", session)
             await self._run_validator(job, session)
 
-            # Stage 7: Embedding and learning (best effort — non-critical).
-            try:
-                await self._run_learner(job, session)
-            except Exception as exc:
-                logger.warning(
-                    "Learner stage failed (non-critical)",
-                    extra={"job_id": str(job_id), "error": str(exc)},
-                )
+            # Stage 6: Embedding and learning (deferred by default for speed).
+            # Enable via job config: {"eager_embeddings": true}
+            if (job.config or {}).get("eager_embeddings", False):
+                try:
+                    await self._run_learner(job, session)
+                except Exception as exc:
+                    logger.warning(
+                        "Learner stage failed (non-critical)",
+                        extra={"job_id": str(job_id), "error": str(exc)},
+                    )
+
+            # Record which stages were deferred for the UI/API.
+            deferred: list[str] = []
+            if not (job.config or {}).get("eager_embeddings", False):
+                deferred.append("learning")
+            if deferred:
+                cfg = dict(job.config or {})
+                cfg["deferred_stages"] = deferred
+                job.config = cfg
 
             # Mark job as complete.
             job.status = "complete"
@@ -411,32 +418,6 @@ class AnalysisService:
         except (ImportError, NotImplementedError, AttributeError) as exc:
             logger.warning(
                 f"Planner unavailable: {exc}",
-                extra={"job_id": str(job.id)},
-            )
-
-    async def _run_transformer(self, job: Job, session: AsyncSession) -> None:
-        """Run the Transformer agent to generate code patches."""
-        try:
-            from app.agents.base import JobContext  # noqa: PLC0415
-            from app.agents.transformer import TransformerAgent  # noqa: PLC0415
-
-            ctx = JobContext(
-                job_id=job.id,
-                repo_path=Path("/tmp"),
-                db_session=session,
-                job_config=job.config or {},
-                llm_provider=self._llm,
-            )
-            ctx.languages = job.languages or []
-            transformer = TransformerAgent()
-            transformer_result = await transformer.run(ctx)
-            job.patch_count = transformer_result.get("patches_created", 0)
-            job.updated_at = datetime.now(UTC)
-            await session.flush()
-
-        except (ImportError, NotImplementedError, AttributeError) as exc:
-            logger.warning(
-                f"Transformer unavailable: {exc}",
                 extra={"job_id": str(job.id)},
             )
 

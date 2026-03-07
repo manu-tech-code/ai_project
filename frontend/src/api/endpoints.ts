@@ -10,7 +10,9 @@ import type {
   GraphMetrics,
   Job,
   JobConfig,
+  JobLogsResponse,
   JobSummary,
+  LLMSettings,
   PaginatedResponse,
   PatchDetail,
   PatchSummary,
@@ -54,16 +56,11 @@ export const analyzeApi = {
 
   deleteJob: (jobId: string) =>
     client.delete(`/analyze/${jobId}`),
-}
 
-// --- Settings ---
-
-export const settingsApi = {
-  getLLM: () =>
-    client.get<{ provider: string; model: string; embed_model: string; base_url: string | null; available_models: string[] }>('/settings/llm'),
-
-  patchLLM: (body: { model?: string; provider?: string }) =>
-    client.patch<{ provider: string; model: string; embed_model: string; base_url: string | null; available_models: string[] }>('/settings/llm', body),
+  getLogs: (jobId: string, sinceSeq = 0, limit = 200) =>
+    client.get<JobLogsResponse>(`/analyze/${jobId}/logs`, {
+      params: { since_seq: sinceSeq, limit },
+    }),
 }
 
 // --- Graph ---
@@ -121,7 +118,7 @@ export const planApi = {
   getPlan: (jobId: string) =>
     client.get<Plan>(`/plan/${jobId}`),
 
-  listTasks: (jobId: string, params?: { status?: string; automated?: boolean }) =>
+  listTasks: (jobId: string, params?: { status?: string; automated?: boolean; page_size?: number }) =>
     client.get<PaginatedResponse<PlanTask>>(`/plan/${jobId}/tasks`, { params }),
 
   getTask: (jobId: string, taskId: string) =>
@@ -141,7 +138,7 @@ export const planApi = {
 export const patchesApi = {
   listPatches: (
     jobId: string,
-    params?: { status?: string; language?: string; task_id?: string; page?: number },
+    params?: { status?: string; language?: string; task_id?: string; page?: number; page_size?: number },
   ) => client.get<PaginatedResponse<PatchSummary>>(`/patches/${jobId}`, { params }),
 
   getPatch: (jobId: string, patchId: string) =>
@@ -163,6 +160,12 @@ export const patchesApi = {
     create_pr?: boolean
     patch_ids?: string[] | null
   }) => client.post<VCSPushResult>(`/patches/${jobId}/push`, body),
+
+  generatePatches: (jobId: string, taskIds?: string[] | null) =>
+    client.post<{ patches_created: number; patch_ids: string[] }>(
+      `/patches/${jobId}/generate`,
+      { task_ids: taskIds ?? null },
+    ),
 }
 
 // --- Validation ---
@@ -208,6 +211,14 @@ export const vcsApi = {
     token: string
     repo_url?: string | null
   }) => client.post<{ success: boolean; message: string }>('/vcs/test', body),
+}
+
+// --- Settings ---
+
+export const settingsApi = {
+  getLLM: () => client.get<LLMSettings>('/settings/llm'),
+  patchLLM: (body: Partial<LLMSettings>) => client.patch<LLMSettings>('/settings/llm', body),
+  testLLM: () => client.post<{ ok: boolean; model?: string; response?: string; error?: string }>('/settings/llm/test'),
 }
 
 // --- Report ---

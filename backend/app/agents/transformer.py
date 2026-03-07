@@ -8,16 +8,18 @@ Output patches are stored as unified diffs in the patches table.
 
 Output:
   - Inserts into patches table
-  - Updates jobs.patch_count
+  - patch_count is updated by the calling endpoint, not this agent
   - Returns list[CodePatch]
 """
 
+import asyncio
 import difflib
 import json
 import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import UUID
 
 from sqlalchemy import insert, select, update
 
@@ -182,23 +184,31 @@ class TransformerAgent(BaseAgent):
     Generates unified diffs with Python difflib.
     """
 
-    stage_name = "transforming"
+    stage_name = "on_demand"
 
-    async def run(self, context: JobContext) -> dict:
+    async def run(self, context: JobContext, task_ids: list[UUID] | None = None) -> dict:  # type: ignore[override]
         """
         Load approved plan tasks from DB, invoke LLM to generate patches,
         produce unified diffs, and insert into patches table.
+
+        Args:
+            context: Job execution context with db session and LLM provider.
+            task_ids: Optional subset of task UUIDs to generate patches for.
+                      When None, all pending/approved automated tasks are processed.
         """
         job_id = context.job_id
         db = context.db_session
 
         # Load automated plan tasks for this job
-        task_result = await db.execute(
+        query = (
             select(PlanTask)
             .where(PlanTask.job_id == job_id)
             .where(PlanTask.automated.is_(True))
             .where(PlanTask.status.in_(["pending", "approved"]))
         )
+        if task_ids:
+            query = query.where(PlanTask.id.in_(task_ids))
+        task_result = await db.execute(query)
         tasks: list[PlanTask] = list(task_result.scalars().all())
 
         if not tasks:
@@ -212,29 +222,39 @@ class TransformerAgent(BaseAgent):
         patches_created = 0
         patch_rows = []
 
-        for i, task in enumerate(tasks):
-            await self.emit_progress(
-                context,
-                f"Generating patch {i+1}/{len(tasks)}: {task.title}",
-                percent=int(20 + (i / len(tasks)) * 60),
-            )
-            try:
-                patch_data = await self._generate_patch(context, task)
-                if patch_data:
-                    patch_rows.append(patch_data)
-                    patches_created += 1
-            except Exception as exc:
+        # Process tasks with controlled concurrency (up to 3 concurrent LLM calls)
+        concurrency = min(3, len(tasks))
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _limited_generate(idx: int, task: PlanTask) -> dict | None:
+            async with semaphore:
+                await self.emit_progress(
+                    context,
+                    f"Generating patch {idx+1}/{len(tasks)}: {task.title}",
+                    percent=int(20 + (idx / len(tasks)) * 60),
+                )
+                return await self._generate_patch(context, task)
+
+        results = await asyncio.gather(
+            *(_limited_generate(i, t) for i, t in enumerate(tasks)),
+            return_exceptions=True,
+        )
+
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
                 self.logger.error(
                     "[%s] Failed to generate patch for task '%s': %s",
-                    job_id, task.title, exc,
+                    job_id, tasks[i].title, result,
                 )
+            elif result is not None:
+                patch_rows.append(result)
+                patches_created += 1
 
         await self.emit_progress(context, "Persisting patches to database", percent=85)
 
         # Persist patches
         if patch_rows:
             await self._persist_patches(context, patch_rows)
-            await self._update_job_patch_count(context, patches_created)
 
         self.logger.info("[%s] Transformer complete: %d patches created.", job_id, patches_created)
 
@@ -271,7 +291,11 @@ class TransformerAgent(BaseAgent):
             file_path=file_path,
             class_name=entity_name,
             description=task.description,
-            evidence=json.dumps({}),
+            evidence=json.dumps({
+                "title": task.title,
+                "refactor_pattern": task.refactor_pattern,
+                "estimated_hours": task.estimated_hours,
+            }),
             pattern=task.refactor_pattern,
         )
 
@@ -311,6 +335,10 @@ class TransformerAgent(BaseAgent):
                 self.logger.warning(
                     "[%s] LLM patch generation failed for task '%s': %s",
                     context.job_id, task.title, exc,
+                )
+                await self.emit_progress(
+                    context,
+                    f"LLM unavailable for {file_path}: {exc}. Generated stub patch.",
                 )
                 # Generate a stub patch explaining what should be done
                 diff_text = _make_stub_diff(file_path, task)

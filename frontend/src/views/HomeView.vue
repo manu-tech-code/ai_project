@@ -114,6 +114,12 @@
         <div v-if="liveJob.current_stage" class="text-xs" style="color: var(--color-text-muted)">
           Stage: <span class="font-medium capitalize" style="color: var(--color-primary)">{{ liveJob.current_stage }}</span>
         </div>
+        <RouterLink
+          :to="{ name: 'job-progress', params: { jobId: liveJob.job_id } }"
+          class="ml-auto"
+        >
+          <BaseButton variant="ghost" size="xs">View Progress →</BaseButton>
+        </RouterLink>
       </div>
     </div>
 
@@ -261,8 +267,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, onMounted, onUnmounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, defineComponent, h, onMounted, onUnmounted, ref, watch } from 'vue'
+import { RouterLink, useRouter } from 'vue-router'
 import BaseButton from '@/components/ui/BaseButton.vue'
 import BaseBadge from '@/components/ui/BaseBadge.vue'
 import BaseCard from '@/components/ui/BaseCard.vue'
@@ -355,7 +361,7 @@ async function refresh(): Promise<void> {
 
 function openJob(job: JobSummary): void {
   store.activeJobId = job.job_id
-  router.push({ name: 'graph', params: { jobId: job.job_id } })
+  router.push({ name: 'job-progress', params: { jobId: job.job_id } })
 }
 
 function isCompleted(status: JobStatus): boolean {

@@ -38,9 +38,12 @@ from app.core.cache import cache_get, cache_invalidate, cache_set
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.models.job import Job
+from app.models.job_log import JobLog
 from app.schemas.job import (
     JobConfig,
     JobListResponse,
+    JobLogEntry,
+    JobLogsResponse,
     JobResponse,
     JobSubmitResponse,
     JobSummaryResponse,
@@ -103,6 +106,7 @@ def _build_job_response(job: Job) -> JobResponse:
         repo_url=job.repo_url,
         fix_branch=job.fix_branch,
         fix_pr_url=job.fix_pr_url,
+        deferred_stages=(job.config or {}).get("deferred_stages", []),
     )
 
 
@@ -322,6 +326,7 @@ async def submit_job_from_url(
         repo_url=repo_url,
         repo_branch=body.branch,
         vcs_provider_id=body.provider_id,
+        repo_path=extract_dir,
         languages=[],
         config=job_config,
         created_at=datetime.now(UTC),
@@ -421,6 +426,7 @@ async def submit_job(
         archive_filename=filename,
         archive_size_bytes=archive_size,
         archive_checksum=checksum,
+        repo_path=extract_dir,
         languages=[],
         config=job_config,
         created_at=datetime.now(UTC),
@@ -454,6 +460,57 @@ async def submit_job(
             "graph": f"{base_url}/graph/{job_id}",
             "report": f"{base_url}/report/{job_id}",
         },
+    )
+
+
+@router.get("/{job_id}/logs", response_model=JobLogsResponse)
+async def get_job_logs(
+    job_id: UUID,
+    since_seq: int = 0,
+    limit: int = 200,
+    db: AsyncSession = Depends(get_db),
+    _key: dict = Depends(get_current_api_key),
+) -> JobLogsResponse:
+    """
+    Return agent progress log entries for a job, supporting incremental polling.
+
+    Use ``since_seq`` to fetch only new entries since the last poll.
+    Returns at most ``limit`` entries ordered by seq ascending.
+    """
+    job_result = await db.execute(select(Job).where(Job.id == job_id))
+    if job_result.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "job_not_found", "message": f"No job found with ID {job_id}"},
+        )
+
+    limit = max(1, min(limit, 500))
+    logs_result = await db.execute(
+        select(JobLog)
+        .where(JobLog.job_id == job_id, JobLog.seq > since_seq)
+        .order_by(JobLog.seq)
+        .limit(limit)
+    )
+    logs = logs_result.scalars().all()
+
+    total_result = await db.execute(
+        select(func.count()).select_from(JobLog).where(JobLog.job_id == job_id)
+    )
+    total = total_result.scalar_one()
+
+    return JobLogsResponse(
+        job_id=job_id,
+        total=total,
+        logs=[
+            JobLogEntry(
+                seq=log.seq,
+                stage=log.stage,
+                message=log.message,
+                percent=log.percent,
+                created_at=log.created_at,
+            )
+            for log in logs
+        ],
     )
 
 
@@ -561,7 +618,7 @@ async def stop_job(
             detail={"error": "job_not_found", "message": f"No job found with ID {job_id}"},
         )
 
-    _stoppable = {"pending", "detecting", "mapping", "analyzing", "planning", "transforming", "validating"}
+    _stoppable = {"pending", "detecting", "mapping", "analyzing", "planning", "validating"}
     if job.status not in _stoppable:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -599,7 +656,7 @@ async def delete_job(
             detail={"error": "job_not_found", "message": f"No job found with ID {job_id}"},
         )
 
-    _running_statuses = {"detecting", "mapping", "analyzing", "planning", "transforming", "validating"}
+    _running_statuses = {"detecting", "mapping", "analyzing", "planning", "validating"}
     if job.status in _running_statuses:
         # Signal the pipeline to stop at the next stage boundary.
         job.status = "cancelled"

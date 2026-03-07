@@ -29,10 +29,11 @@ describe('API client configuration', () => {
     expect(client.defaults.baseURL).toBe('/api/v1')
   })
 
-  it('has a 60 second timeout', async () => {
+  it('has a 5 minute timeout', async () => {
     const mod = await import('@/api/client')
     const client = mod.default
-    expect(client.defaults.timeout).toBe(60_000)
+    // Check initial instance
+    expect(client.defaults.timeout).toBe(300_000)
   })
 
   it('has default Content-Type of application/json', async () => {

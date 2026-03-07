@@ -34,11 +34,10 @@
     <nav class="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto overflow-x-hidden">
       <!-- Primary nav -->
       <NavItem to="/" icon="⌂" label="Dashboard" :collapsed="uiStore.sidebarCollapsed" />
-      <NavItem to="/analyze" icon="+" label="New Analysis" :collapsed="uiStore.sidebarCollapsed" />
       <NavItem to="/settings" icon="&#x2699;" label="Settings" :collapsed="uiStore.sidebarCollapsed" />
 
       <!-- Job-scoped section -->
-      <template v-if="analysisStore.activeJobId">
+      <template v-if="analysisStore.activeJobId && onJobRoute">
         <div
           v-if="!uiStore.sidebarCollapsed"
           class="pt-4 pb-1 px-2 text-xs font-semibold uppercase tracking-widest"
@@ -48,10 +47,11 @@
         </div>
         <div v-else class="my-2 border-t" :style="{ borderColor: 'var(--color-border)' }" />
 
-        <!-- Active job label -->
-        <div
+        <!-- Active job label — clicking navigates to the progress view -->
+        <RouterLink
           v-if="!uiStore.sidebarCollapsed && analysisStore.activeJob"
-          class="mx-2 mb-2 px-2 py-1.5 rounded-md text-xs truncate"
+          :to="`/jobs/${analysisStore.activeJobId}/progress`"
+          class="mx-2 mb-2 px-2 py-1.5 rounded-md text-xs truncate block hover:bg-white/10 transition-colors"
           :style="{ background: 'var(--color-elevated)', color: 'var(--color-text-secondary)' }"
         >
           <span class="font-mono">{{ shortJobId(analysisStore.activeJob.job_id) }}</span>
@@ -70,8 +70,9 @@
             />
             <span style="color: var(--color-warning)">{{ analysisStore.activeJob.status }}</span>
           </span>
-        </div>
+        </RouterLink>
 
+        <NavItem :to="`/jobs/${analysisStore.activeJobId}/progress`" icon="▶" label="Progress" :collapsed="uiStore.sidebarCollapsed" />
         <NavItem :to="`/jobs/${analysisStore.activeJobId}/graph`"   icon="◎" label="Graph"   :collapsed="uiStore.sidebarCollapsed" />
         <NavItem :to="`/jobs/${analysisStore.activeJobId}/smells`"  icon="⚠" label="Smells"  :collapsed="uiStore.sidebarCollapsed" />
         <NavItem :to="`/jobs/${analysisStore.activeJobId}/plan`"    icon="✦" label="Plan"    :collapsed="uiStore.sidebarCollapsed" />
@@ -81,62 +82,23 @@
       </template>
     </nav>
 
-    <!-- AI Model section -->
-    <div
-      class="px-2 pb-2 flex-shrink-0 border-t"
-      :style="{ borderColor: 'var(--color-border)' }"
-    >
-      <!-- Collapsed: just an icon -->
-      <div v-if="uiStore.sidebarCollapsed" class="pt-2 flex justify-center">
-        <button
-          @click="uiStore.sidebarCollapsed = false"
-          class="w-8 h-8 rounded-md flex items-center justify-center text-base transition-colors"
-          :style="{ color: llm.available_models.length ? '#a5b4fc' : 'var(--color-text-muted)' }"
-          title="AI Model"
-        >⬡</button>
-      </div>
-
-      <!-- Expanded -->
-      <template v-else>
-        <div class="pt-3 pb-1 px-2 flex items-center justify-between">
-          <span class="text-xs font-semibold uppercase tracking-widest" style="color: var(--color-text-muted)">AI Model</span>
-          <span
-            class="inline-block w-1.5 h-1.5 rounded-full"
-            :style="{ background: llm.available_models.length ? '#22c55e' : '#ef4444' }"
-            :title="llm.available_models.length ? 'Connected' : 'No models found'"
-          />
-        </div>
-
-        <!-- Provider badge -->
-        <div class="px-2 mb-1.5 flex items-center gap-1.5">
-          <span
-            class="text-xs px-1.5 py-0.5 rounded font-mono font-semibold"
-            style="background: rgba(99,102,241,0.15); color: #a5b4fc"
-          >{{ llm.provider }}</span>
-          <span v-if="llm.loading" class="text-xs" style="color: var(--color-text-muted)">loading…</span>
-        </div>
-
-        <!-- Model selector -->
-        <div class="px-2">
-          <select
-            :value="llm.model"
-            @change="switchModel(($event.target as HTMLSelectElement).value)"
-            class="w-full text-xs rounded-md px-2 py-1.5 border truncate"
-            :style="{
-              background: 'var(--color-elevated)',
-              borderColor: 'var(--color-border)',
-              color: 'var(--color-text)',
-            }"
-            :disabled="llm.loading || !llm.available_models.length"
-          >
-            <!-- Current model always present even if not in list -->
-            <option v-if="!llm.available_models.includes(llm.model)" :value="llm.model">
-              {{ llm.model }}
-            </option>
-            <option v-for="m in llm.available_models" :key="m" :value="m">{{ m }}</option>
-          </select>
-        </div>
-      </template>
+    <!-- Active model pill -->
+    <div v-if="activeModelName" class="px-2 pb-2 flex-shrink-0">
+      <button
+        @click="router.push('/settings')"
+        class="flex items-center gap-1.5 w-full px-2 py-1.5 rounded-md text-xs transition-colors truncate"
+        :style="{
+          background: 'rgba(99,102,241,0.1)',
+          color: 'var(--color-text-muted)',
+          border: '1px solid rgba(99,102,241,0.2)',
+        }"
+        :title="uiStore.sidebarCollapsed ? activeModelName : undefined"
+      >
+        <span class="flex-shrink-0 select-none">&#x2726;</span>
+        <span v-if="!uiStore.sidebarCollapsed" class="truncate font-mono" style="color: var(--color-primary)">
+          {{ activeModelName }}
+        </span>
+      </button>
     </div>
 
     <!-- Collapse toggle -->
@@ -154,72 +116,33 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, onMounted, reactive } from 'vue'
-import { RouterLink, useLink } from 'vue-router'
-import { settingsApi } from '@/api/endpoints'
+import { computed, defineComponent, h, onMounted, ref } from 'vue'
+import { RouterLink, useLink, useRoute, useRouter } from 'vue-router'
 import { useAnalysisStore } from '@/stores/analysis'
 import { useUIStore } from '@/stores/ui'
+import { settingsApi } from '@/api/endpoints'
 
 const uiStore = useUIStore()
 const analysisStore = useAnalysisStore()
+const route = useRoute()
+const router = useRouter()
+
+const onJobRoute = computed(() => route.path.startsWith('/jobs/'))
+
+// Active model pill
+const activeModelName = ref<string | null>(null)
+onMounted(async () => {
+  try {
+    const { data } = await settingsApi.getLLM()
+    activeModelName.value = data.model
+  } catch {
+    // silent — not critical
+  }
+})
 
 function shortJobId(id: string): string {
   return id.slice(0, 8) + '…'
 }
-
-// ── LLM model state ────────────────────────────────────────────────────────
-
-/**
- * Module-level cache so the LLM settings survive route navigation without
- * re-fetching. The sidebar is always mounted so onMounted fires on every
- * page load — the TTL guard prevents a network request on each navigation.
- */
-const LLM_SETTINGS_TTL_MS = 30_000
-let _llmLastFetchedAt = 0
-
-const llm = reactive({
-  provider: 'ollama',
-  model: '',
-  available_models: [] as string[],
-  loading: false,
-})
-
-async function loadLLMSettings(force = false): Promise<void> {
-  const now = Date.now()
-  if (!force && llm.model !== '' && now - _llmLastFetchedAt < LLM_SETTINGS_TTL_MS) {
-    // Still within TTL and we have data — skip the network round-trip.
-    return
-  }
-  llm.loading = true
-  try {
-    const { data } = await settingsApi.getLLM()
-    llm.provider = data.provider
-    llm.model = data.model
-    llm.available_models = data.available_models
-    _llmLastFetchedAt = Date.now()
-  } catch {
-    // silently fail — sidebar is not critical
-  } finally {
-    llm.loading = false
-  }
-}
-
-async function switchModel(model: string): Promise<void> {
-  llm.loading = true
-  try {
-    const { data } = await settingsApi.patchLLM({ model })
-    llm.model = data.model
-    llm.available_models = data.available_models
-    // A successful model switch counts as a fresh fetch — reset TTL.
-    _llmLastFetchedAt = Date.now()
-  } catch {
-    // revert on error
-  } finally {
-    llm.loading = false
-  }
-}
-
-onMounted(() => loadLLMSettings())
 
 // ── NavItem ────────────────────────────────────────────────────────────────
 // Uses computed(() => props.to) for reactive route tracking.

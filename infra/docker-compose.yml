@@ -59,6 +59,18 @@ services:
       timeout: 10s
       retries: 5
 
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/version || exit 1"]
+  #     interval: 15s
+  #     timeout: 10s
+  #     retries: 5
+
   backend:
     build:
       context: ../backend
@@ -73,12 +85,15 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis}@redis:6379/0
       JAVA_PARSER_URL: http://java-parser:8090
       ALM_JOBS_DIR: /alm_jobs
-      OLLAMA_BASE_URL: http://host.docker.internal:1234/v1
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:1234/v1}
+
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - alm_jobs_data:/alm_jobs
     depends_on:
+      # ollama:
+      #   condition: service_healthy
       postgres:
         condition: service_healthy
       rabbitmq:
@@ -104,12 +119,14 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-redis}@redis:6379/0
       JAVA_PARSER_URL: http://java-parser:8090
       ALM_JOBS_DIR: /alm_jobs
-      OLLAMA_BASE_URL: http://host.docker.internal:1234/v1
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434/v1}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - alm_jobs_data:/alm_jobs
     depends_on:
+      # ollama:
+      #   condition: service_healthy
       postgres:
         condition: service_healthy
       rabbitmq:
@@ -139,3 +156,4 @@ volumes:
   postgres_data:
   rabbitmq_data:
   alm_jobs_data:
+  # ollama_data:

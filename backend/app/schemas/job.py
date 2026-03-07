@@ -16,6 +16,10 @@ class JobConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    model: str | None = Field(
+        default=None,
+        description="LLM model override for this job (uses server default if not set)",
+    )
     languages: list[str] = Field(
         default_factory=list,
         description="Restrict analysis to specific languages (empty = auto-detect all)",
@@ -98,6 +102,7 @@ class JobResponse(BaseModel):
     repo_url: str | None = None
     fix_branch: str | None = None
     fix_pr_url: str | None = None
+    deferred_stages: list[str] = []
 
 
 class JobSummaryResponse(BaseModel):
@@ -134,3 +139,21 @@ class JobListResponse(BaseModel):
 
     data: list[JobSummaryResponse]
     pagination: PaginationMeta
+
+
+class JobLogEntry(BaseModel):
+    """A single agent progress log entry."""
+
+    seq: int
+    stage: str
+    message: str
+    percent: int
+    created_at: datetime
+
+
+class JobLogsResponse(BaseModel):
+    """Incremental log response for a job."""
+
+    job_id: UUID
+    total: int
+    logs: list[JobLogEntry]

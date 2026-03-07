@@ -61,7 +61,7 @@ function bustCache(urlFragment: string): void {
 
 const client: AxiosInstance = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? '/api/v1',
-  timeout: 60_000,
+  timeout: 300_000,
   headers: {
     'Content-Type': 'application/json',
     Accept: 'application/json',
