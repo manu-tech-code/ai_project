@@ -427,12 +427,27 @@
         </svg>
       </div>
       <div v-else-if="diffModal.patch">
-        <div class="flex flex-wrap gap-3 mb-4 text-xs" style="color: var(--color-text-muted)">
+        <div class="flex flex-wrap gap-3 mb-4 text-xs" style="color: var(--color-text-muted); align-items: center">
           <span>File: <span class="font-mono" style="color: var(--color-text)">{{ diffModal.patch.file_path }}</span></span>
           <span>Language: <span style="color: var(--color-text)">{{ diffModal.patch.language }}</span></span>
           <span v-if="diffModal.patch.tokens_used">
             Tokens: <span style="color: var(--color-text)">{{ diffModal.patch.tokens_used.toLocaleString() }}</span>
           </span>
+          <button
+            v-if="diffModal.patch.prompt"
+            @click="diffModal.showPrompt = !diffModal.showPrompt"
+            class="ml-auto underline hover:opacity-80 transition-opacity"
+            style="color: var(--color-primary)"
+          >
+            {{ diffModal.showPrompt ? 'Hide Prompt' : 'View Prompt' }}
+          </button>
+        </div>
+        <div
+          v-if="diffModal.showPrompt && diffModal.patch.prompt"
+          class="mb-4 rounded-lg overflow-auto text-xs font-mono p-4"
+          style="max-height: 300px; background: #0a0c12; border: 1px solid var(--color-border); white-space: pre-wrap; color: var(--color-text-muted)"
+        >
+          {{ diffModal.patch.prompt }}
         </div>
         <div
           class="rounded-lg overflow-auto text-xs font-mono"
@@ -803,9 +818,12 @@ async function generateMoreAll(): Promise<void> {
 // ── Diff modal ─────────────────────────────────────────────────────────────────
 interface ParsedLine { type: string; prefix: string; content: string }
 
-const diffModal = reactive<{ open: boolean; loading: boolean; patch: PatchDetail | null }>(
-  { open: false, loading: false, patch: null }
-)
+const diffModal = reactive<{ open: boolean; loading: boolean; patch: PatchDetail | null; showPrompt: boolean }>({
+  open: false,
+  loading: false,
+  patch: null,
+  showPrompt: false,
+})
 
 const parsedDiff = computed<ParsedLine[]>(() => {
   if (!diffModal.patch?.diff) return []
@@ -822,6 +840,7 @@ async function viewDiff(patchId: string): Promise<void> {
   diffModal.open = true
   diffModal.loading = true
   diffModal.patch = null
+  diffModal.showPrompt = false
   try {
     const { data } = await patchesApi.getPatch(jobId, patchId)
     diffModal.patch = data

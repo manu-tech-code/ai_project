@@ -157,6 +157,7 @@ def _patch_to_detail(patch: Patch, validation_passed: bool | None) -> PatchDetai
         original_content=patch.original_content,
         patched_content=patch.patched_content,
         validation_passed=validation_passed,
+        prompt=patch.prompt,
         tokens_used=patch.tokens_used,
         model_used=patch.model_used,
         created_at=patch.created_at,

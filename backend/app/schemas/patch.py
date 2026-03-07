@@ -61,6 +61,7 @@ class PatchDetailResponse(BaseModel):
     original_content: str
     patched_content: str
     validation_passed: bool | None = None
+    prompt: str | None = None
     tokens_used: int | None
     model_used: str | None
     created_at: datetime

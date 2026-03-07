@@ -284,6 +284,7 @@ export interface PatchDetail extends PatchSummary {
   diff: string
   original_content: string
   patched_content: string
+  prompt: string | null
   applied_at: string | null
   applied_by: string | null
   reverted_at: string | null

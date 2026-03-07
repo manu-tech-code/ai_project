@@ -363,6 +363,7 @@ class TransformerAgent(BaseAgent):
             "original_content": original_content,
             "patched_content": patched_content,
             "diff": diff_text,
+            "prompt": prompt,
             "tokens_used": tokens_used,
             "model_used": model_used,
             "created_at": datetime.now(UTC),

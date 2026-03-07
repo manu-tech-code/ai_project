@@ -7,7 +7,12 @@
     <div class="flex flex-col flex-1 min-w-0 overflow-hidden">
       <AppHeader />
       <main class="flex-1 overflow-auto" style="background: var(--color-bg)">
-        <RouterView />
+        <RouterView v-slot="{ Component, route }">
+          <KeepAlive :max="10">
+            <component :is="Component" :key="route.fullPath" v-if="route.meta.keepAlive" />
+          </KeepAlive>
+          <component :is="Component" :key="route.fullPath" v-if="!route.meta.keepAlive" />
+        </RouterView>
       </main>
     </div>
 

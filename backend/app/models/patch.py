@@ -55,6 +55,7 @@ class Patch(Base):
     diff: Mapped[str] = mapped_column(Text, nullable=False)
 
     # LLM metadata.
+    prompt: Mapped[str | None] = mapped_column(Text)
     tokens_used: Mapped[int | None] = mapped_column(Integer)
     model_used: Mapped[str | None] = mapped_column(Text)
 
